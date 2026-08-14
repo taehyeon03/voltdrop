@@ -190,7 +190,11 @@ private fun HomeContent(state: ChargingState, screenOn: Boolean) {
                     // 수위가 글자 높이에 걸치면 초록 물 위에 초록·회색 글자가 얹혀 안 읽힌다.
                     // 물에 잠기든 안 잠기든 대비가 유지되게 흰 계열로 고정하고, 보조 정보는
                     // 흰색 투명도로만 단계를 준다.
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // 원 중심이 상자 중앙(0.5)이 아니라 0.44 라서 글자도 같은 만큼 올린다.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.offset(y = (-19).dp)
+                    ) {
                         Text(
                             wattsText,
                             color = Color.White, fontSize = 54.sp, fontWeight = FontWeight.Bold

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -45,6 +46,11 @@ internal val EaseInOutStrong = CubicBezierEasing(0.77f, 0f, 0.175f, 1f)
 // 뭔가 나타나거나 사라질 때 쓰는 강한 ease-out. 빠르게 시작해서 부드럽게 자리잡는다 —
 // 반대로 도는 ease-in은 사용자가 보고 있는 그 순간을 느리게 시작해서 굼떠 보인다.
 internal val EaseOutStrong = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+
+// 게이지 원의 위치와 크기. 원을 정중앙에 두면 아래로 새는 물줄기가 그려질 자리가 없어
+// 상자 밖으로 잘려 나가므로, 중심을 살짝 위로 올려 아래쪽 여백을 확보한다.
+private const val GaugeCenterY = 0.44f
+private const val GaugeRadius = 0.42f
 
 /** 저속=ECO, 일반/고속=NORMAL, 초고속=SPORT. 차량 주행 모드처럼 게이지 표현 자체가 달라진다. */
 enum class DriveMode(val label: String) { ECO("ECO"), NORMAL("NORMAL"), SPORT("SPORT") }
@@ -152,7 +158,10 @@ fun WaterDropGauge(
     val animatedRing by animateFloatAsState(targetRing, label = "ringWidth")
 
     Box(modifier, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) {
+        // clipToBounds 가 없으면 게이지 밖으로 나간 물줄기·방울이 아래 카드 위에 그대로
+        // 그려진다 (Compose Canvas 는 기본적으로 경계를 자르지 않는다). 물이 화면에 떠다니는
+        // 것처럼 보여 고장난 듯한 인상을 준다.
+        Canvas(Modifier.fillMaxSize().clipToBounds()) {
             // 시간 위상 — 전부 draw scope 안에서 읽는다 (리컴포지션 없이 redraw 만).
             // 물결·기포는 속도가 변해도 이어지도록 누적된 위상을 그대로 쓴다.
             val now = clockMs
@@ -171,8 +180,10 @@ fun WaterDropGauge(
             val w = size.width
             val h = size.height
             val cx = w / 2f
-            val cy = h / 2f
-            val r = min(w, h) * 0.46f
+            // 원을 정중앙이 아니라 살짝 위에 둔다. 정중앙 + 반지름 0.46 이면 원 아래로 남는
+            // 공간이 10dp 남짓이라 새는 물줄기가 나오자마자 상자 밖으로 잘려 나갔다.
+            val cy = h * GaugeCenterY
+            val r = min(w, h) * GaugeRadius
 
             // SPORT 모드 전용 — 숨쉬는 글로우 링. 원 바깥, 배경에만 번진다.
             if (connected && mode == DriveMode.SPORT) {
@@ -187,7 +198,9 @@ fun WaterDropGauge(
             clipPath(circlePath) {
                 drawRect(fillColor.copy(alpha = 0.14f))
 
-                val waterTop = h * (1f - displayFill)
+                // 수위는 캔버스가 아니라 원의 위아래 끝을 기준으로 잡는다 — 원이 정중앙이
+                // 아니라서 캔버스 기준으로 잡으면 50% 가 원의 절반과 어긋난다.
+                val waterTop = (cy - r) + 2f * r * (1f - displayFill)
                 val amp = (h * 0.018f) * (0.7f + smoothWatts / 40f).coerceIn(0.7f, 2f)
 
                 // 뒤쪽 물결 — 느리고 흐리게
@@ -417,8 +430,8 @@ fun WaterDropGauge(
 private fun buildCircle(path: Path, w: Float, h: Float) {
     path.reset()
     val cx = w / 2f
-    val cy = h / 2f
-    val r = min(w, h) * 0.46f
+    val cy = h * GaugeCenterY
+    val r = min(w, h) * GaugeRadius
     path.addOval(androidx.compose.ui.geometry.Rect(cx - r, cy - r, cx + r, cy + r))
 }
 
