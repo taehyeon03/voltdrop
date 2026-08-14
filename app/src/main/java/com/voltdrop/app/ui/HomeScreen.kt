@@ -179,17 +179,21 @@ private fun HomeContent(state: ChargingState, screenOn: Boolean) {
                         animate = screenOn,
                         modifier = Modifier.fillMaxSize()
                     )
+                    // 수위가 글자 높이에 걸치면 초록 물 위에 초록·회색 글자가 얹혀 안 읽힌다.
+                    // 물에 잠기든 안 잠기든 대비가 유지되게 흰 계열로 고정하고, 보조 정보는
+                    // 흰색 투명도로만 단계를 준다.
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             wattsText,
-                            color = TextMain, fontSize = 54.sp, fontWeight = FontWeight.Bold
+                            color = Color.White, fontSize = 54.sp, fontWeight = FontWeight.Bold
                         )
-                        Text("와트", color = TextMuted, fontSize = 13.sp, letterSpacing = 3.sp)
+                        Text("와트", color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 13.sp, letterSpacing = 3.sp)
                         Spacer(Modifier.height(6.dp))
                         Text(
                             "${state.socPercent}%  ·  $dashTierLabel",
-                            color = if (state.connected) color else TextMuted,
-                            fontSize = 15.sp, fontWeight = FontWeight.Medium
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 15.sp, fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -247,27 +251,46 @@ private fun HomeContent(state: ChargingState, screenOn: Boolean) {
 
 @Composable
 private fun HabitsContent(state: ChargingState) {
-    val hasSessions = remember { SessionStore.recent(30).isNotEmpty() }
-    if (!hasSessions) {
+    // revision 을 구독해야 기록이 쌓이거나 초기화될 때 화면이 따라온다.
+    // remember 로 첫 조회를 얼려두면 영영 갱신되지 않는다.
+    val rev by SessionStore.revision.collectAsState()
+    val sessions = remember(rev) { SessionStore.recent(30) }
+    if (sessions.isEmpty()) {
         EmptyHint("충전 습관 리포트", "완충하거나 충전기를 뽑으면 세션이 하나씩 쌓이고, 그때부터 리포트가 채워집니다.")
         return
     }
-    HabitReportCard()
+    HabitReportCard(sessions)
     if (state.throttles.isNotEmpty()) {
         Spacer(Modifier.height(10.dp))
         ThrottleCard(state.throttles, state.sessionPeakWatts)
     }
+    Spacer(Modifier.height(10.dp))
+    ResetCard(
+        title = "충전 습관 기록 초기화",
+        body = "지금까지 쌓인 ${sessions.size}개 세션 기록을 지웁니다. 충전기 목록은 그대로 둡니다.",
+        onConfirm = { SessionStore.clear() }
+    )
 }
 
 @Composable
 private fun ChargersContent(state: ChargingState) {
+    val rev by ChargerRegistry.revision.collectAsState()
+    val chargers = remember(rev) { ChargerRegistry.all() }
+
     ChargerCard(state)
     Spacer(Modifier.height(10.dp))
-    val hasMulti = remember { ChargerRegistry.all().size >= 2 }
-    if (hasMulti) {
-        ChargerLeaderboard(state.charger?.id)
+    if (chargers.size >= 2) {
+        ChargerLeaderboard(chargers, state.charger?.id)
     } else {
         EmptyHint("충전기 순위", "충전기를 두 개 이상 써보면 출력을 비교해서 줄 세워 보여줍니다.")
+    }
+    if (chargers.isNotEmpty()) {
+        Spacer(Modifier.height(10.dp))
+        ResetCard(
+            title = "충전기 목록 초기화",
+            body = "기억해 둔 충전기 ${chargers.size}개를 지웁니다. 다음 충전부터 다시 알아봅니다.",
+            onConfirm = { ChargerRegistry.clear() }
+        )
     }
 }
 
@@ -277,6 +300,49 @@ private fun EmptyHint(title: String, body: String) {
         Text(title, color = TextMuted, fontSize = 11.sp, letterSpacing = 1.sp)
         Spacer(Modifier.height(6.dp))
         Text(body, color = TextMuted, fontSize = 13.sp)
+    }
+}
+
+/** 되돌릴 수 없는 삭제라 한 번 더 확인을 받는다. */
+@Composable
+private fun ResetCard(title: String, body: String, onConfirm: () -> Unit) {
+    var asking by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().glassPanel().padding(16.dp)) {
+        Text(title, color = TextMuted, fontSize = 11.sp, letterSpacing = 1.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(body, color = TextMuted, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        if (!asking) {
+            Text(
+                "초기화",
+                color = Color(0xFFF5A524), fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .border(1.dp, Color(0xFFF5A524).copy(alpha = 0.5f), RoundedCornerShape(50))
+                    .clickable { asking = true }
+                    .padding(horizontal = 18.dp, vertical = 8.dp)
+            )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "정말 지우기",
+                    color = Color(0xFF060C09), fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFFF5A524))
+                        .clickable { onConfirm(); asking = false }
+                        .padding(horizontal = 18.dp, vertical = 8.dp)
+                )
+                Text(
+                    "취소",
+                    color = TextMuted, fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable { asking = false }
+                        .padding(horizontal = 18.dp, vertical = 8.dp)
+                )
+            }
+        }
     }
 }
 
@@ -468,8 +534,7 @@ private fun PlugTag(plug: PlugType) {
  * 어느 한 습관이 지배적인지에 따라 코멘트가 바뀐다.
  */
 @Composable
-private fun HabitReportCard() {
-    val sessions = remember { SessionStore.recent(30) }
+private fun HabitReportCard(sessions: List<ChargingSession>) {
     if (sessions.isEmpty()) return
 
     val fullSessions = sessions.filter { it.endSoc >= 100 }
@@ -591,8 +656,8 @@ private fun stressTip(hotRatio: Int, avgFullMin: Int, overnightRatio: Int): Stri
 
 /** 지금까지 알아본 충전기들을 최고 출력 순으로 줄 세운다. */
 @Composable
-private fun ChargerLeaderboard(activeId: String?) {
-    val chargers = remember { ChargerRegistry.all() }.sortedByDescending { it.bestPeakWatts }
+private fun ChargerLeaderboard(all: List<ChargerFingerprint>, activeId: String?) {
+    val chargers = all.sortedByDescending { it.bestPeakWatts }
     if (chargers.size < 2) return
 
     Column(

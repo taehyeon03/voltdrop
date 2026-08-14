@@ -32,6 +32,8 @@ class ChargingRepository(
 
     init {
         DischargeTracker.init(context)
+        ChargerRegistry.init(context)
+        SessionStore.init(context)
     }
 
     private val _state = MutableStateFlow(ChargingState())
@@ -45,6 +47,8 @@ class ChargingRepository(
     private var loop: Job? = null
     private var capacityMah = 4000
     private var dischargeSummary: DischargeSummary? = null
+    private var currentChargerId: String? = null
+    private var lastRegisteredPeak = 0f
 
     companion object {
         const val FOREGROUND_MS = 1_000L
@@ -125,6 +129,8 @@ class ChargingRepository(
             throttles.clear()
             buffer.clear()
             sessionPeak = 0f
+            currentChargerId = null
+            lastRegisteredPeak = 0f
             dischargeSummary = DischargeTracker.summarize(s.socPercent, s.timeMs)
         }
 
@@ -139,6 +145,18 @@ class ChargingRepository(
 
         detectThrottle(s, w)
 
+        // 충전기는 충전을 시작하자마자 등록한다. 예전처럼 뽑을 때만 기록하면 충전 내내
+        // "처음 보는 충전기"로 뜨고, 세션 중 앱이 죽으면 아예 남지 않는다.
+        // 첫 등록만 세션 수를 올리고, 이후에는 피크가 의미 있게 갱신될 때 값만 고친다.
+        if (sessionPeak >= 0.5f && (currentChargerId == null || sessionPeak > lastRegisteredPeak * 1.15f)) {
+            currentChargerId = ChargerRegistry.upsert(
+                plug = s.plug, peak = sessionPeak, voltMv = s.voltageMv, ramp = rampSeconds(),
+                countAsNewSession = currentChargerId == null,
+                existingId = currentChargerId
+            )
+            lastRegisteredPeak = sessionPeak
+        }
+
         _state.value = ChargingState(
             connected = true,
             socPercent = s.socPercent,
@@ -150,7 +168,7 @@ class ChargingRepository(
             tier = classify(w, s),
             sessionPeakWatts = sessionPeak,
             minutesRemaining = estimateMinutes(s, w),
-            charger = ChargerRegistry.match(s.plug, sessionPeak, s.voltageMv, rampSeconds()),
+            charger = ChargerRegistry.byId(currentChargerId),
             throttles = throttles.toList(),
             recentWatts = buffer.map { it.watts },
             calibrated = sampler.isCalibrated,
@@ -239,7 +257,11 @@ class ChargingRepository(
         val avgW = if (buffer.isEmpty()) 0f else buffer.map { it.watts }.average().toFloat()
         val minutes = ((last.timeMs - start.timeMs) / 60000f)
 
-        ChargerRegistry.record(start.plug, sessionPeak, last.voltageMv, rampSeconds())
+        // 세션이 끝났으니 최종 피크로 값만 갱신한다 — 세션 수는 시작할 때 이미 올렸다.
+        val chargerId = ChargerRegistry.upsert(
+            plug = start.plug, peak = sessionPeak, voltMv = last.voltageMv, ramp = rampSeconds(),
+            countAsNewSession = false, existingId = currentChargerId
+        )
 
         SessionStore.append(
             ChargingSession(
@@ -248,7 +270,7 @@ class ChargingRepository(
                 startSoc = start.socPercent,
                 endSoc = last.socPercent,
                 plug = start.plug,
-                chargerId = ChargerRegistry.match(start.plug, sessionPeak, last.voltageMv, rampSeconds())?.id,
+                chargerId = chargerId,
                 peakWatts = sessionPeak,
                 avgWatts = avgW,
                 peakTempC = buffer.maxOfOrNull { it.temperatureC } ?: 0f,
@@ -259,12 +281,71 @@ class ChargingRepository(
             )
         )
         sessionStart = null
+        currentChargerId = null
+        lastRegisteredPeak = 0f
     }
 }
 
-/** 충전기 지문 저장소. 실제 앱에서는 Room 이나 DataStore 로 뺀다. */
+/**
+ * 충전기 지문 저장소.
+ *
+ * 메모리에만 두면 앱을 껐다 켤 때마다 "처음 보는 충전기"가 된다 — 이 앱의 핵심 기능이
+ * 매번 리셋되는 셈이라 SharedPreferences 에 JSON 으로 남긴다. 항목이 수십 개 수준이라
+ * 이 정도면 충분하다(Room 은 과하다).
+ */
 object ChargerRegistry {
+    private const val PREFS = "voltdrop_chargers"
+    private const val KEY = "list"
+    private var prefs: android.content.SharedPreferences? = null
     private val known = mutableListOf<ChargerFingerprint>()
+
+    /** 목록이 바뀔 때마다 올라가는 값. UI 가 이걸 보고 다시 읽는다. */
+    private val _revision = MutableStateFlow(0)
+    val revision: StateFlow<Int> = _revision.asStateFlow()
+
+    fun init(context: Context) {
+        if (prefs != null) return
+        prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        load()
+    }
+
+    private fun load() {
+        val raw = prefs?.getString(KEY, null) ?: return
+        known.clear()
+        runCatching {
+            val arr = org.json.JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                known += ChargerFingerprint(
+                    id = o.getString("id"),
+                    nickname = o.getString("nickname"),
+                    plug = PlugType.valueOf(o.getString("plug")),
+                    peakWatts = o.getDouble("peak").toFloat(),
+                    peakVoltageMv = o.getInt("volt"),
+                    rampSeconds = o.getInt("ramp"),
+                    sessionCount = o.getInt("count"),
+                    bestPeakWatts = o.getDouble("best").toFloat()
+                )
+            }
+        }
+        _revision.value++
+    }
+
+    private fun save() {
+        val arr = org.json.JSONArray()
+        known.forEach { c ->
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("id", c.id); put("nickname", c.nickname); put("plug", c.plug.name)
+                    put("peak", c.peakWatts.toDouble()); put("volt", c.peakVoltageMv)
+                    put("ramp", c.rampSeconds); put("count", c.sessionCount)
+                    put("best", c.bestPeakWatts.toDouble())
+                }
+            )
+        }
+        prefs?.edit()?.putString(KEY, arr.toString())?.apply()
+        _revision.value++
+    }
 
     fun match(plug: PlugType, peak: Float, voltMv: Int, ramp: Int): ChargerFingerprint? =
         known.firstOrNull {
@@ -273,31 +354,55 @@ object ChargerRegistry {
                     abs(it.peakVoltageMv - voltMv) < 250
         }
 
-    fun record(plug: PlugType, peak: Float, voltMv: Int, ramp: Int) {
-        if (peak < 1f) return
-        val existing = match(plug, peak, voltMv, ramp)
+    fun byId(id: String?): ChargerFingerprint? = known.firstOrNull { it.id == id }
+
+    /**
+     * 충전기를 알아보거나 새로 등록한다. 예전에는 뽑을 때만 기록해서, 충전 중에는 계속
+     * "처음 보는 충전기"로 보이고 세션 도중 앱이 죽으면 아예 남지 않았다. 이제는 충전을
+     * 시작하면 바로 등록하고(countAsNewSession=true), 이후 피크가 갱신될 때마다 값만 고친다.
+     *
+     * @return 이 세션이 쓰는 충전기 id
+     */
+    fun upsert(
+        plug: PlugType, peak: Float, voltMv: Int, ramp: Int,
+        countAsNewSession: Boolean, existingId: String? = null
+    ): String? {
+        if (peak < 0.5f) return existingId
+        val existing = byId(existingId) ?: match(plug, peak, voltMv, ramp)
         if (existing != null) {
             known[known.indexOf(existing)] = existing.copy(
-                sessionCount = existing.sessionCount + 1,
-                peakWatts = (existing.peakWatts * 3 + peak) / 4,
+                sessionCount = existing.sessionCount + if (countAsNewSession) 1 else 0,
+                peakWatts = if (countAsNewSession) peak else (existing.peakWatts * 3 + peak) / 4,
+                peakVoltageMv = voltMv,
+                rampSeconds = ramp,
                 bestPeakWatts = maxOf(existing.bestPeakWatts, peak)
             )
-        } else {
-            known += ChargerFingerprint(
-                id = "chg_${known.size + 1}",
-                nickname = defaultName(plug, peak),
-                plug = plug, peakWatts = peak, peakVoltageMv = voltMv,
-                rampSeconds = ramp, sessionCount = 1, bestPeakWatts = peak
-            )
+            save()
+            return existing.id
         }
+        val id = "chg_${System.currentTimeMillis().toString().takeLast(8)}"
+        known += ChargerFingerprint(
+            id = id,
+            nickname = defaultName(plug, peak),
+            plug = plug, peakWatts = peak, peakVoltageMv = voltMv,
+            rampSeconds = ramp, sessionCount = 1, bestPeakWatts = peak
+        )
+        save()
+        return id
     }
 
     fun rename(id: String, name: String) {
         known.indexOfFirst { it.id == id }.takeIf { it >= 0 }
-            ?.let { known[it] = known[it].copy(nickname = name) }
+            ?.let { known[it] = known[it].copy(nickname = name); save() }
     }
 
     fun all(): List<ChargerFingerprint> = known.toList()
+
+    fun clear() {
+        known.clear()
+        prefs?.edit()?.remove(KEY)?.apply()
+        _revision.value++
+    }
 
     private fun defaultName(plug: PlugType, peak: Float) = when {
         plug.isWireless -> "무선 패드 ${peak.roundToInt()}W"
@@ -308,11 +413,83 @@ object ChargerRegistry {
     }
 }
 
-/** 세션 기록. 실제 앱에서는 Room 으로 교체한다. */
+/** 세션 기록. 충전기 목록과 같은 이유로 디스크에 남긴다. */
 object SessionStore {
+    private const val PREFS = "voltdrop_sessions"
+    private const val KEY = "list"
+    private const val LIMIT = 200
+    private var prefs: android.content.SharedPreferences? = null
     private val sessions = mutableListOf<ChargingSession>()
-    fun append(s: ChargingSession) { sessions += s; if (sessions.size > 500) sessions.removeAt(0) }
+
+    private val _revision = MutableStateFlow(0)
+    val revision: StateFlow<Int> = _revision.asStateFlow()
+
+    fun init(context: Context) {
+        if (prefs != null) return
+        prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        load()
+    }
+
+    private fun load() {
+        val raw = prefs?.getString(KEY, null) ?: return
+        sessions.clear()
+        runCatching {
+            val arr = org.json.JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                sessions += ChargingSession(
+                    startMs = o.getLong("start"),
+                    endMs = if (o.isNull("end")) null else o.getLong("end"),
+                    startSoc = o.getInt("ssoc"),
+                    endSoc = o.getInt("esoc"),
+                    plug = PlugType.valueOf(o.getString("plug")),
+                    chargerId = if (o.isNull("chg")) null else o.getString("chg"),
+                    peakWatts = o.getDouble("peak").toFloat(),
+                    avgWatts = o.getDouble("avg").toFloat(),
+                    peakTempC = o.getDouble("temp").toFloat(),
+                    minutesAbove40C = o.getInt("hot"),
+                    minutesAtFull = o.getInt("full"),
+                    // 스로틀 상세는 세션 요약에 필요 없어 저장하지 않는다 — 발열 임계 통계만
+                    // 쓰는데, 그건 아래 heatTempC 하나로 충분하다.
+                    throttles = emptyList(),
+                    energyInWh = o.getDouble("wh").toFloat()
+                )
+            }
+        }
+        _revision.value++
+    }
+
+    private fun save() {
+        val arr = org.json.JSONArray()
+        sessions.forEach { s ->
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("start", s.startMs); put("end", s.endMs ?: org.json.JSONObject.NULL)
+                    put("ssoc", s.startSoc); put("esoc", s.endSoc); put("plug", s.plug.name)
+                    put("chg", s.chargerId ?: org.json.JSONObject.NULL)
+                    put("peak", s.peakWatts.toDouble()); put("avg", s.avgWatts.toDouble())
+                    put("temp", s.peakTempC.toDouble()); put("hot", s.minutesAbove40C)
+                    put("full", s.minutesAtFull); put("wh", s.energyInWh.toDouble())
+                }
+            )
+        }
+        prefs?.edit()?.putString(KEY, arr.toString())?.apply()
+        _revision.value++
+    }
+
+    fun append(s: ChargingSession) {
+        sessions += s
+        while (sessions.size > LIMIT) sessions.removeAt(0)
+        save()
+    }
+
     fun recent(n: Int = 30): List<ChargingSession> = sessions.takeLast(n)
+
+    fun clear() {
+        sessions.clear()
+        prefs?.edit()?.remove(KEY)?.apply()
+        _revision.value++
+    }
 }
 
 /**
