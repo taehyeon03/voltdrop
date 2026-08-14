@@ -110,6 +110,7 @@ fun WaterDropGauge(
 
     val wavePath = remember { Path() }
     val circlePath = remember { Path() }
+    val streamPath = remember { Path() }
     val bubbleCount = (6 + (watts / 2.2f).toInt()).coerceIn(6, 34)
     // 모드가 바뀔 때 테두리 두께가 툭 끊기지 않고 스르륵 따라오게 한다.
     val targetRing = if (!connected) 2f else when (mode) {
@@ -198,10 +199,14 @@ fun WaterDropGauge(
             drawCircle(fillColor.copy(alpha = 0.7f), radius = r,
                 center = Offset(cx, cy), style = Stroke(width = animatedRing.dp.toPx()))
 
-            // 새는 물 — 충전 안 할 때, 테두리에 구멍이 뚫려서 원 밖으로 튄다.
-            // 안쪽이 아니라 바깥쪽에 그린다 — 물이 원 안에서 흐르는 게 아니라 새어 나가는 것.
-            // 지금 얼마나 빠지는지가 애니메이션 자체에 드러나야 해서, 방전 W(=watts)가 클수록
-            // 줄기가 빠르고 굵게, 방울이 더 멀리 튄다. 숫자 안 봐도 세기가 느껴지게.
+            // 새는 물 — 충전 안 할 때, 테두리 구멍에서 물줄기가 끊기지 않고 흘러나간다.
+            //
+            // 방울 몇 개를 띄우면 "샌다"가 아니라 그냥 점이 움직이는 걸로 읽힌다. 실제 쏟아지는
+            // 물은 (1) 끊김 없는 하나의 줄기고 (2) 나오는 데가 굵고 끝으로 갈수록 가늘어지며
+            // (3) 중력으로 휘어 떨어지고 (4) 끝에서 방울로 부서진다. 그래서 점 대신 테이퍼드
+            // 리본(양쪽 가장자리를 가진 채워진 Path)으로 그린다.
+            //
+            // 세기(방전 W)는 줄기의 굵기·길이·초기 속도에 실린다. 숫자 안 봐도 얼마나 빠지는지 보이게.
             if (!connected) {
                 val holeAngleDeg = 35f   // 3시~6시 사이, 오른쪽 아래로 샌다
                 val rad = Math.toRadians(holeAngleDeg.toDouble())
@@ -211,24 +216,72 @@ fun WaterDropGauge(
                 val holeY = cy + dirY * r
 
                 val intensity = (watts / 3f).coerceIn(0f, 1f)   // 방전 3W면 최대 세기
-                val leakPeriod = 1500f - intensity * 900f        // 빠를수록 주기가 짧다(더 자주 튄다)
-                val leakT = (now % leakPeriod.toLong().coerceAtLeast(1)) / leakPeriod
-                val reach = (14f + intensity * 26f).dp.toPx()    // 빠를수록 더 멀리 튄다
-                val dropSize = 2.6f + intensity * 2.4f
+                val streamColor = lerp(fillColor, Color.White, 0.28f)
 
-                // 원 밖으로 나간 방울은 물과 같은 초록으로 그린다 — 흰색으로 그리면
-                // 검은 배경에 묻혀서 "물이 샌다"가 아니라 그냥 점으로 보인다.
-                val dropColor = lerp(fillColor, Color.White, 0.35f)
-                for (i in 0 until 3) {
-                    val t = (leakT + i * 0.33f) % 1f
-                    val dist = t * reach
-                    val dx = holeX + dirX * dist
-                    val dy = holeY + dirY * dist + (t * t) * 14.dp.toPx()   // 살짝 포물선으로 떨어진다
-                    val a = (1f - t * 0.7f).coerceIn(0f, 1f) * (0.8f + intensity * 0.2f)
-                    drawCircle(dropColor.copy(alpha = a),
-                        radius = (dropSize - t * dropSize * 0.35f).dp.toPx(), center = Offset(dx, dy))
+                // 줄기 궤적: 구멍 방향으로 쏘아진 뒤 중력으로 아래로 휜다.
+                // 길이는 게이지 반지름 기준으로 묶어둔다 — 아래 카드 위까지 넘어가면 안 된다.
+                val v0 = r * (0.16f + intensity * 0.16f)        // 초기 속도(=수평 도달 거리)
+                val gravity = r * (0.22f + intensity * 0.12f)   // 아래로 당기는 정도
+                val headW = (2.2f + intensity * 3.4f).dp.toPx() // 구멍 쪽 반폭
+                val steps = 22
+
+                // 표면 흔들림이 아래로 흘러가며 "흐르고 있다"를 만든다. 위상은 절대 리셋되지
+                // 않는 시계에서 뽑아 쓰므로 주기 경계에서 튀지 않는다.
+                val flowPhase = (now % 900L) / 900f * (2f * PI.toFloat())
+
+                fun pointAt(t: Float): Offset {
+                    val x = holeX + dirX * v0 * t
+                    val y = holeY + dirY * v0 * t + gravity * t * t
+                    return Offset(x, y)
                 }
-                // 구멍 자국
+
+                streamPath.reset()
+                // 한쪽 가장자리를 따라 내려갔다가 반대쪽 가장자리를 따라 올라와서 닫는다.
+                for (i in 0..steps) {
+                    val t = i / steps.toFloat()
+                    val p = pointAt(t)
+                    val half = headW * (1f - t * 0.72f)          // 끝으로 갈수록 가늘어진다
+                    val wob = sin(t * 7f - flowPhase) * (1f - t) * 1.1f.dp.toPx()
+                    // 진행 방향의 법선 — 굵기를 줄기와 직각으로 준다.
+                    val tangentY = dirY * v0 + 2f * gravity * t
+                    val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
+                    val nx = -tangentY / len
+                    val ny = (dirX * v0) / len
+                    val ox = nx * (half + wob)
+                    val oy = ny * (half + wob)
+                    if (i == 0) streamPath.moveTo(p.x + ox, p.y + oy)
+                    else streamPath.lineTo(p.x + ox, p.y + oy)
+                }
+                for (i in steps downTo 0) {
+                    val t = i / steps.toFloat()
+                    val p = pointAt(t)
+                    val half = headW * (1f - t * 0.72f)
+                    val wob = sin(t * 7f - flowPhase) * (1f - t) * 1.1f.dp.toPx()
+                    val tangentY = dirY * v0 + 2f * gravity * t
+                    val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
+                    val nx = -tangentY / len
+                    val ny = (dirX * v0) / len
+                    streamPath.lineTo(p.x - nx * (half - wob), p.y - ny * (half - wob))
+                }
+                streamPath.close()
+                drawPath(streamPath, streamColor.copy(alpha = 0.85f))
+
+                // 줄기 끝에서 부서져 떨어지는 방울 — 줄기가 끝나는 지점에서 이어 받는다.
+                val tail = pointAt(1f)
+                val dropCycle = 620f - intensity * 240f
+                for (i in 0 until 2) {
+                    val dt = ((now % dropCycle.toLong().coerceAtLeast(1)) / dropCycle + i * 0.5f) % 1f
+                    val dx = tail.x + dirX * v0 * dt * 0.3f
+                    val dy = tail.y + (dirY * v0 * 0.3f + gravity * 0.55f * (1f + dt)) * dt
+                    val a = (1f - dt) * 0.9f
+                    drawCircle(
+                        streamColor.copy(alpha = a),
+                        radius = headW * (0.75f - dt * 0.3f),
+                        center = Offset(dx, dy)
+                    )
+                }
+
+                // 구멍 자국 — 줄기가 나오는 자리라 줄기 위에 덮어 그린다.
                 drawCircle(Color(0xFF0B0E14), radius = 5.dp.toPx(), center = Offset(holeX, holeY))
                 drawCircle(fillColor.copy(alpha = 0.9f), radius = 5.dp.toPx(),
                     center = Offset(holeX, holeY), style = Stroke(width = 1.5.dp.toPx()))
