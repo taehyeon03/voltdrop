@@ -74,7 +74,9 @@ fun WaterDropGauge(
     modifier: Modifier = Modifier
 ) {
     val fillColor = when {
-        !connected -> Color(0xFF3C4A42)   // 충전 안 할 땐 색이 죽는다 — 살아있지 않다는 신호
+        // 방전 중에도 같은 초록 계열을 쓴다. 회색으로 죽이면 새어 나가는 흰 물방울이
+        // 배경에 묻혀 안 보인다 — 대비가 있어야 빠지는 게 눈에 들어온다.
+        !connected -> Color(0xFF1C7A4C)
         tier == SpeedTier.THROTTLED -> tierColor(tier)
         else -> greenForFraction(watts / 30f)
     }
@@ -214,14 +216,17 @@ fun WaterDropGauge(
                 val reach = (14f + intensity * 26f).dp.toPx()    // 빠를수록 더 멀리 튄다
                 val dropSize = 2.6f + intensity * 2.4f
 
+                // 원 밖으로 나간 방울은 물과 같은 초록으로 그린다 — 흰색으로 그리면
+                // 검은 배경에 묻혀서 "물이 샌다"가 아니라 그냥 점으로 보인다.
+                val dropColor = lerp(fillColor, Color.White, 0.35f)
                 for (i in 0 until 3) {
                     val t = (leakT + i * 0.33f) % 1f
                     val dist = t * reach
                     val dx = holeX + dirX * dist
                     val dy = holeY + dirY * dist + (t * t) * 14.dp.toPx()   // 살짝 포물선으로 떨어진다
-                    val a = (1f - t).coerceIn(0f, 1f) * (0.55f + intensity * 0.3f)
-                    drawCircle(Color.White.copy(alpha = a),
-                        radius = (dropSize - t * dropSize * 0.5f).dp.toPx(), center = Offset(dx, dy))
+                    val a = (1f - t * 0.7f).coerceIn(0f, 1f) * (0.8f + intensity * 0.2f)
+                    drawCircle(dropColor.copy(alpha = a),
+                        radius = (dropSize - t * dropSize * 0.35f).dp.toPx(), center = Offset(dx, dy))
                 }
                 // 구멍 자국
                 drawCircle(Color(0xFF0B0E14), radius = 5.dp.toPx(), center = Offset(holeX, holeY))
