@@ -303,11 +303,12 @@ fun WaterDropGauge(
                     // 구멍이 여러 개면 하나당 나오는 양이 줄어든다 — 총량은 세기가 정한다.
                     val share = (0.62f + intensity * 0.38f) / (1f + (holeCountF - 1f) * 0.35f)
 
-                    // 실제로 통에 난 구멍에서 새는 물은 옆으로 멀리 뻗지 않는다. 수압으로 살짝
-                    // 밀려 나오자마자 중력이 이겨서 거의 곧장 떨어진다. 예전에는 초기 속도가
-                    // 커서 옆으로 크게 휘는 뿔처럼 보였다 — 가로 속도를 줄이고 중력을 키운다.
-                    val v0 = r * (0.035f + intensity * 0.035f) * (0.75f + share * 0.5f) * speedMul
-                    val gravity = r * (0.34f + intensity * 0.14f) * (0.9f + hIdx * 0.13f)
+                    // 수압이 걸린 구멍에서 나오는 물은 곧장 떨어지지 않고 옆으로 쏘아진 뒤
+                    // 포물선을 그리며 떨어진다. 초기 속도를 키워 사선으로 뻗게 하되, 예전처럼
+                    // 뿔로 보이지 않도록 중력도 함께 실어 확실히 아래로 꺾이게 한다.
+                    // 세기가 클수록(방전이 많을수록) 더 멀리 쏘아진다.
+                    val v0 = r * (0.16f + intensity * 0.12f) * (0.75f + share * 0.5f) * speedMul
+                    val gravity = r * (0.24f + intensity * 0.10f) * (0.9f + hIdx * 0.13f)
                     // 출렁임에 맞춰 굵기도 살짝 맥동한다 — 수도꼭지처럼 일정하지 않게.
                     val pulse = 1f + sin(livePhase * (1.6f + hIdx * 0.4f) + seed) * 0.14f
                     val headW = r * (0.080f + intensity * 0.085f) * share * pulse * open * widthMul
