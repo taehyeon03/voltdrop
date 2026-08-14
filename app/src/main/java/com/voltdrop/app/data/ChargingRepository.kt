@@ -78,7 +78,13 @@ class ChargingRepository(
         loop = null
         finishSession()
         DischargeTracker.recordDisconnect(s.socPercent, s.timeMs)
-        _state.value = ChargingState(calibrated = sampler.isCalibrated)
+        // 잔량은 방금 읽은 마지막 값을 그대로 남긴다 — 0%로 리셋하면 뽑자마자
+        // 게이지가 빈 것처럼 보인다. 새 측정은 아니다, 이미 읽은 값 재사용이다.
+        _state.value = ChargingState(
+            socPercent = s.socPercent,
+            temperatureC = s.temperatureC,
+            calibrated = sampler.isCalibrated
+        )
     }
 
     private fun restart(intervalMs: Long) {
@@ -96,7 +102,21 @@ class ChargingRepository(
         val s = sampler.read() ?: return
 
         if (!s.isCharging || s.plug == PlugType.NONE) {
-            if (sessionStart != null) disconnect(s)
+            if (sessionStart != null) {
+                disconnect(s)
+            } else {
+                // 충전 안 하는 동안에도, 화면을 보고 있을 때만 도는 이 루프에서
+                // 이미 읽은 sticky 값이니 잔량과 지금 빠지는 전력까지 그대로 보여준다.
+                // 방전 중엔 charging-time 보정이 안 걸려 있을 수 있어 부호가 안 맞을 수 있다 —
+                // 화면에서는 절대값만 쓴다.
+                _state.value = ChargingState(
+                    socPercent = s.socPercent,
+                    watts = s.watts,
+                    amps = s.amps,
+                    temperatureC = s.temperatureC,
+                    calibrated = sampler.isCalibrated
+                )
+            }
             return
         }
 

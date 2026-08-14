@@ -8,8 +8,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:label="Voltdrop"
-        android:icon="@android:drawable/ic_lock_idle_charging"
+        android:label="Battery"
+        android:icon="@drawable/ic_battery"
         android:theme="@style/Theme.Material3.Dark.NoActionBar">
 
         <activity

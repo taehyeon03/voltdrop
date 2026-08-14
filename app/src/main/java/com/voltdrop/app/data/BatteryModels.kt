@@ -35,7 +35,7 @@ enum class SpeedTier(val label: String) {
     NORMAL("일반"),         // 5~12W
     FAST("고속"),           // 12~25W
     SUPER("초고속"),        // 25W 이상
-    TAPERING("마무리"),     // 80% 이상, 자연 감속 (CV 구간)
+    TAPERING("감속"),       // 80% 이상, 자연 감속 (CV 구간)
     THROTTLED("발열 제한")  // 열 때문에 눌린 상태
 }
 

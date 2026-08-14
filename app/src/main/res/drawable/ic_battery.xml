@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 배경 -->
+    <path
+        android:fillColor="#060C09"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- 배터리 꼭지 -->
+    <path
+        android:fillColor="#E8F5EC"
+        android:pathData="M46,22 h16 a3,3 0 0 1 3,3 v9 h-22 v-9 a3,3 0 0 1 3,-3 z" />
+
+    <!-- 배터리 몸통 테두리 -->
+    <path
+        android:fillColor="#0F1D16"
+        android:strokeColor="#E8F5EC"
+        android:strokeWidth="4.5"
+        android:pathData="M30,32 h48 a8,8 0 0 1 8,8 v46 a8,8 0 0 1 -8,8 h-48 a8,8 0 0 1 -8,-8 v-46 a8,8 0 0 1 8,-8 z" />
+
+    <!-- 충전량 채움 -->
+    <path
+        android:fillColor="#2E8F5C"
+        android:pathData="M34,58 h40 a4,4 0 0 1 4,4 v18 a4,4 0 0 1 -4,4 h-40 a4,4 0 0 1 -4,-4 v-18 a4,4 0 0 1 4,-4 z" />
+</vector>
