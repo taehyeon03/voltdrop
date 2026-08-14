@@ -104,10 +104,17 @@ fun WaterDropGauge(
     //
     // 또한 이 State 를 컴포저블 본문에서 읽으면 매 프레임 리컴포지션이 일어나 오히려 버벅인다.
     // Canvas 의 onDraw 람다 안에서만 읽어야 리컴포지션 없이 다시 그리기만 발생한다.
+    val intensity = (smoothWatts / 3f).coerceIn(0f, 1f)   // 방전 세기 (구멍/물줄기용)
     val speedState = rememberUpdatedState(speed)
+    val intensityState = rememberUpdatedState(intensity)
     var wavePhaseAcc by remember { mutableStateOf(0f) }   // 라디안, 0..2PI 순환
-    var risePhaseAcc by remember { mutableStateOf(0f) }   // 0..1 순환
-    var clockMs by remember { mutableStateOf(0L) }        // 주기가 고정된 것들(글로우·누수)용
+    // 기포는 셋으로 나눠 서로 다른 속도로 올린다. 예전에는 위상 하나를 배속으로 곱해 썼는데,
+    // 그 위상이 1에서 0으로 감기는 순간 (1 × 1.11) % 1 = 0.11 만큼 값이 튀어서 매 주기마다
+    // 모든 기포가 한 번씩 순간이동했다. 배속별로 위상을 따로 누적하면 감기는 지점이
+    // "기포가 위로 빠져나가고 아래에서 새로 올라오는" 자연스러운 자리와 정확히 일치한다.
+    val riseAccs = remember { mutableStateListOf(0f, 0.37f, 0.71f) }
+    var leakAcc by remember { mutableStateOf(0f) }        // 새는 물방울 위상 0..1
+    var clockMs by remember { mutableStateOf(0L) }        // 주기가 고정된 것(글로우)용
     LaunchedEffect(animate) {
         if (!animate) return@LaunchedEffect
         var last = withFrameMillis { it }
@@ -119,7 +126,14 @@ fun WaterDropGauge(
                 clockMs += dt
                 val s = speedState.value
                 wavePhaseAcc = (wavePhaseAcc + dt / (4200f / s) * 2f * PI.toFloat()) % (2f * PI.toFloat())
-                risePhaseAcc = (risePhaseAcc + dt / (2600f / s)) % 1f
+                for (i in riseAccs.indices) {
+                    val jitter = 0.55f + i * 0.28f
+                    riseAccs[i] = (riseAccs[i] + dt / (2600f / s) * jitter) % 1f
+                }
+                // 물방울 간격도 세기에 따라 빨라진다. 속도를 바꿀 때 위상이 튀지 않도록
+                // 역시 누적식으로 굴린다 (절대 시각 % 주기 로 구하면 주기가 바뀌는 순간 점프한다).
+                val dropCycle = 620f - intensityState.value * 240f
+                leakAcc = (leakAcc + dt / dropCycle) % 1f
             }
         }
     }
@@ -127,7 +141,8 @@ fun WaterDropGauge(
     val wavePath = remember { Path() }
     val circlePath = remember { Path() }
     val streamPath = remember { Path() }
-    val bubbleCount = (6 + (smoothWatts / 2.2f).toInt()).coerceIn(6, 34)
+    // 소수 그대로 들고 간다 — 정수로 자르면 개수가 바뀌는 순간 기포가 툭 나타난다.
+    val bubbleCountF = (6f + smoothWatts / 2.2f).coerceIn(6f, 34f)
     // 모드가 바뀔 때 테두리 두께가 툭 끊기지 않고 스르륵 따라오게 한다.
     val targetRing = if (!connected) 2f else when (mode) {
         DriveMode.ECO -> 2f
@@ -142,16 +157,15 @@ fun WaterDropGauge(
             // 물결·기포는 속도가 변해도 이어지도록 누적된 위상을 그대로 쓴다.
             val now = clockMs
             val livePhase = wavePhaseAcc
-            val liveRise = risePhaseAcc
             // SPORT 모드 숨쉬는 글로우 — 주기가 고정이라 절대 시각으로 구해도 튀지 않는다.
             val glowHalfPeriod = 950f
             val glowT = (now % (glowHalfPeriod * 2).toLong().coerceAtLeast(1)) / glowHalfPeriod
             val glowAlpha = 0.14f + 0.26f * (1f - abs(glowT - 1f))
-            // 물이 새는 동안 수위도 아주 조금씩 출렁이며 줄어든다 — 실측치가 아니라 연출용 눈금.
-            val leakDip = if (connected) 0f else {
-                val dipPeriod = 1300f
-                ((now % dipPeriod.toLong().coerceAtLeast(1)) / dipPeriod) * 0.015f
-            }
+            // 물이 새는 동안 수면이 미세하게 오르내린다. 예전에는 톱니파(0 → 0.015 → 뚝 0)라
+            // 주기마다 수면이 위로 툭 튀어올랐다 — 방전 화면이 특히 심하게 버벅여 보인 원인.
+            // 사인파로 바꾸면 끝과 시작이 이어져 스냅이 없다.
+            val leakDip = if (connected) 0f else
+                (1f - cos(livePhase * 0.7f)) * 0.5f * 0.012f
             val displayFill = (fill - leakDip).coerceAtLeast(0f)
 
             val w = size.width
@@ -182,18 +196,24 @@ fun WaterDropGauge(
                 // 앞쪽 물결 — 진하게
                 drawWave(wavePath, w, h, waterTop, amp, livePhase, fillColor.copy(alpha = 0.88f))
 
-                // 보글보글 기포 — 충전 중일 때만, 전력이 셀수록 더 많고 빠르게 올라온다
+                // 보글보글 기포 — 충전 중일 때만, 전력이 셀수록 더 많고 빠르게 올라온다.
+                // 개수가 정수라 임계를 넘는 순간 기포 하나가 통째로 튀어나오면 그것도 끊김으로
+                // 보인다. 마지막 기포는 소수부만큼 투명도로 서서히 들어오게 한다.
                 if (connected && waterTop < h - 4f) {
-                    for (i in 0 until bubbleCount) {
+                    val visible = ceil(bubbleCountF).toInt()
+                    val edgeFade = bubbleCountF - floor(bubbleCountF)
+                    for (i in 0 until visible) {
                         val xSeed = (i * 0.6180339f) % 1f
-                        val speedJitter = 0.55f + (i % 3) * 0.28f
-                        val t = (liveRise * speedJitter + i * 0.131f) % 1f
+                        // 배속별로 따로 누적한 위상을 쓴다 — 감기는 지점이 곧 기포가
+                        // 새로 올라오기 시작하는 자리라 튀지 않는다.
+                        val t = (riseAccs[i % riseAccs.size] + i * 0.131f) % 1f
                         val by = h - (h - waterTop) * t
                         if (by < waterTop + 2f) continue
                         val wobble = sin(t * 8f + i) * w * 0.025f
                         val bx = (w * xSeed + wobble).coerceIn(w * 0.06f, w * 0.94f)
                         val br = (2.6f + (i % 3) * 1.7f).dp.toPx()
-                        val a = (1f - t) * 0.6f
+                        val countFade = if (i == visible - 1 && edgeFade > 0f) edgeFade else 1f
+                        val a = (1f - t) * 0.6f * countFade
                         drawCircle(Color.White.copy(alpha = a), radius = br, center = Offset(bx, by))
                     }
                 }
@@ -227,23 +247,38 @@ fun WaterDropGauge(
             // 걸로 읽힌다. 굵기 자체도 dp 고정이 아니라 원 크기에 비례시켜 게이지가 커지면 같이 커진다.
             val holeSpecs: List<Pair<Float, Float>>   // (각도, 링에서 비울 반각)
             if (!connected) {
-                val intensity = (smoothWatts / 3f).coerceIn(0f, 1f)   // 방전 3W면 최대 세기
-                // 많이 빠질수록 구멍이 늘어난다 — 1개(잔잔) → 3개(펑펑)
-                val holeCount = (1 + (intensity * 2.4f).toInt()).coerceIn(1, 3)
-                val angles = listOf(38f, 86f, 132f).take(holeCount)
+                // 많이 빠질수록 구멍이 늘어난다 — 1개(잔잔) → 3개(펑펑).
+                // 정수로 자르면 임계를 넘는 순간 줄기 하나가 통째로 튀어나와 끊겨 보인다.
+                // 소수부를 그대로 들고 가서 마지막 구멍은 굵기·투명도로 서서히 열리게 한다.
+                val holeCountF = (1f + intensity * 2.4f).coerceIn(1f, 3f)
+                val visibleHoles = ceil(holeCountF).toInt()
+                val edgeOpen = holeCountF - floor(holeCountF)
+                // 구멍은 등간격으로 두면 안 된다 — 균일하게 벌어져 있으면 물이 새는 게 아니라
+                // 디자인 패턴처럼 보인다. 간격도 굵기도 속도도 서로 어긋나게 둔다.
+                val angles = listOf(31f, 74f, 126f).take(visibleHoles)
+                // 구멍별 고유 성격: (굵기 배율, 속도 배율, 흔들림 배율)
+                val traits = listOf(
+                    Triple(1.15f, 0.92f, 1.0f),
+                    Triple(0.72f, 1.18f, 1.45f),
+                    Triple(0.94f, 1.03f, 0.75f)
+                )
                 val streamColor = lerp(fillColor, Color.White, 0.28f)
                 val steps = 22
-                // 표면 흔들림이 아래로 흘러가며 "흐르고 있다"를 만든다. 위상은 절대 리셋되지
-                // 않는 시계에서 뽑아 쓰므로 주기 경계에서 튀지 않는다.
-                val flowPhase = (now % 900L) / 900f * (2f * PI.toFloat())
+                // 표면 흔들림이 아래로 흘러가며 "흐르고 있다"를 만든다. 감기는 지점이 sin 안이라
+                // 값이 이어진다.
+                val flowPhase = livePhase * 2.4f
                 val specs = mutableListOf<Pair<Float, Float>>()
 
                 angles.forEachIndexed { hIdx, angleDeg ->
+                    val (widthMul, speedMul, wobbleMul) = traits[hIdx]
+                    // 마지막 구멍은 세기가 임계를 넘는 만큼만 열린다 (0 → 1 로 서서히).
+                    val open = if (hIdx == visibleHoles - 1 && edgeOpen > 0f) edgeOpen else 1f
                     // 구멍마다 위상을 달리 줘서 똑같은 줄기가 복사된 것처럼 보이지 않게.
-                    val seed = hIdx * 1.7f
+                    // 무리수 배수를 써서 세 줄기의 출렁임이 절대 같은 박자로 맞아떨어지지 않게 한다.
+                    val seed = hIdx * 2.399f
                     // 안쪽 물결과 같은 livePhase 로 발원점을 흔든다 — 물이 출렁이는 만큼
                     // 새는 자리도 같이 흔들려야 한 몸으로 보인다.
-                    val slosh = sin(livePhase + seed) * 2.2f
+                    val slosh = sin(livePhase * (0.8f + hIdx * 0.27f) + seed) * 2.2f * wobbleMul
                     val holeAngle = angleDeg + slosh
                     val rad = Math.toRadians(holeAngle.toDouble())
                     val dirX = cos(rad).toFloat()
@@ -252,12 +287,12 @@ fun WaterDropGauge(
                     val holeY = cy + dirY * r
 
                     // 구멍이 여러 개면 하나당 나오는 양이 줄어든다 — 총량은 세기가 정한다.
-                    val share = (0.62f + intensity * 0.38f) / (1f + (holeCount - 1) * 0.35f)
-                    val v0 = r * (0.10f + intensity * 0.10f) * (0.75f + share * 0.5f)
-                    val gravity = r * (0.13f + intensity * 0.07f)
+                    val share = (0.62f + intensity * 0.38f) / (1f + (holeCountF - 1f) * 0.35f)
+                    val v0 = r * (0.10f + intensity * 0.10f) * (0.75f + share * 0.5f) * speedMul
+                    val gravity = r * (0.13f + intensity * 0.07f) * (0.9f + hIdx * 0.13f)
                     // 출렁임에 맞춰 굵기도 살짝 맥동한다 — 수도꼭지처럼 일정하지 않게.
-                    val pulse = 1f + sin(livePhase * 1.6f + seed) * 0.14f
-                    val headW = r * (0.045f + intensity * 0.055f) * share * pulse
+                    val pulse = 1f + sin(livePhase * (1.6f + hIdx * 0.4f) + seed) * 0.14f
+                    val headW = r * (0.045f + intensity * 0.055f) * share * pulse * open * widthMul
 
                     // 링에서 비울 반각 = 줄기 반폭이 원주에서 차지하는 각 (+ 아주 약간의 여유)
                     val halfGapDeg = Math.toDegrees(atan((headW * 1.15f) / r).toDouble()).toFloat()
@@ -269,49 +304,77 @@ fun WaterDropGauge(
                         return Offset(x, y)
                     }
 
+                    // 줄기 실루엣.
+                    //
+                    // 예쁘게 보이려면 세 가지가 필요하다:
+                    //  - 끝이 뭉툭하게 잘리지 않고 한 점으로 모여야 한다 (물은 가늘어지다 끊긴다)
+                    //  - 굵기가 선형이 아니라 처음엔 천천히, 끝에서 급히 줄어야 한다 (표면장력)
+                    //  - 좌우 가장자리가 살짝 다르게 흔들려야 한다 (완전 대칭이면 고무호스처럼 보인다)
+                    fun halfAt(t: Float, side: Float): Float {
+                        // (1-t)^1.6 → 초반은 통통하고 끝으로 갈수록 빠르게 가늘어진다
+                        val taper = (1f - t).pow(1.6f)
+                        val wob = sin(t * 6.5f - flowPhase + seed + side * 1.9f) *
+                            (1f - t) * headW * 0.22f
+                        return headW * taper + wob
+                    }
+
                     streamPath.reset()
                     // 한쪽 가장자리를 따라 내려갔다가 반대쪽 가장자리를 따라 올라와서 닫는다.
                     for (i in 0..steps) {
                         val t = i / steps.toFloat()
                         val p = pointAt(t)
-                        val half = headW * (1f - t * 0.72f)          // 끝으로 갈수록 가늘어진다
-                        val wob = sin(t * 7f - flowPhase + seed) * (1f - t) * 1.1f.dp.toPx()
-                        // 진행 방향의 법선 — 굵기를 줄기와 직각으로 준다.
                         val tangentY = dirY * v0 + 2f * gravity * t
                         val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
                         val nx = -tangentY / len
                         val ny = (dirX * v0) / len
-                        val ox = nx * (half + wob)
-                        val oy = ny * (half + wob)
-                        if (i == 0) streamPath.moveTo(p.x + ox, p.y + oy)
-                        else streamPath.lineTo(p.x + ox, p.y + oy)
+                        val half = halfAt(t, 1f)
+                        if (i == 0) streamPath.moveTo(p.x + nx * half, p.y + ny * half)
+                        else streamPath.lineTo(p.x + nx * half, p.y + ny * half)
                     }
                     for (i in steps downTo 0) {
                         val t = i / steps.toFloat()
                         val p = pointAt(t)
-                        val half = headW * (1f - t * 0.72f)
-                        val wob = sin(t * 7f - flowPhase + seed) * (1f - t) * 1.1f.dp.toPx()
                         val tangentY = dirY * v0 + 2f * gravity * t
                         val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
                         val nx = -tangentY / len
                         val ny = (dirX * v0) / len
-                        streamPath.lineTo(p.x - nx * (half - wob), p.y - ny * (half - wob))
+                        val half = halfAt(t, -1f)
+                        streamPath.lineTo(p.x - nx * half, p.y - ny * half)
                     }
                     streamPath.close()
-                    drawPath(streamPath, streamColor.copy(alpha = 0.85f))
 
-                    // 줄기 끝에서 부서져 떨어지는 방울 — 줄기가 끝나는 지점에서 이어 받는다.
+                    // 물기둥은 가장자리가 밝고 안쪽이 조금 더 짙다 — 유리관 같은 입체감.
+                    val head = pointAt(0f)
                     val tail = pointAt(1f)
-                    val dropCycle = 620f - intensity * 240f
-                    for (i in 0 until 2) {
-                        val dt = ((now % dropCycle.toLong().coerceAtLeast(1)) / dropCycle +
-                            i * 0.5f + hIdx * 0.27f) % 1f
-                        val dx = tail.x + dirX * v0 * dt * 0.3f
-                        val dy = tail.y + (dirY * v0 * 0.3f + gravity * 0.55f * (1f + dt)) * dt
-                        val a = (1f - dt) * 0.9f
+                    drawPath(
+                        streamPath,
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                streamColor.copy(alpha = 0.95f * open),
+                                streamColor.copy(alpha = 0.72f * open)
+                            ),
+                            start = head, end = tail
+                        )
+                    )
+
+                    // 줄기 끝에서 부서져 떨어지는 방울들. 위상은 누적값(leakAcc)에서 가져온다 —
+                    // 예전처럼 "절대 시각 % 주기"로 구하면 세기가 바뀌는 순간 위치가 점프했다.
+                    // 크기와 옆으로 흩어지는 정도를 방울마다 달리 줘서 흩뿌려지는 느낌을 낸다.
+                    for (i in 0 until 3) {
+                        val dt = (leakAcc + i * 0.333f + hIdx * 0.27f) % 1f
+                        val spread = (i - 1) * headW * 0.55f * dt      // 아래로 갈수록 옆으로 벌어진다
+                        val tangentY = dirY * v0 + 2f * gravity
+                        val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
+                        val nx = -tangentY / len
+                        val ny = (dirX * v0) / len
+                        val dx = tail.x + dirX * v0 * dt * 0.3f + nx * spread
+                        val dy = tail.y + (dirY * v0 * 0.3f + gravity * 0.55f * (1f + dt)) * dt +
+                            ny * spread
+                        val a = (1f - dt * dt) * 0.85f * open          // 끝에서 부드럽게 사라진다
+                        val sizeVar = 0.72f - i * 0.12f
                         drawCircle(
                             streamColor.copy(alpha = a),
-                            radius = headW * (0.75f - dt * 0.3f),
+                            radius = headW * sizeVar * (1f - dt * 0.35f),
                             center = Offset(dx, dy)
                         )
                     }

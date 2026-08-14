@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voltdrop.app.data.*
 import kotlinx.coroutines.launch
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 private val Bg = Color(0xFF060C09)
@@ -45,7 +46,7 @@ private fun Modifier.glassPanel(radius: Dp = 14.dp): Modifier =
 enum class GaugeMode { DROP, DASH }
 
 private enum class Screen(val label: String) {
-    HOME("홈"), HABITS("충전 습관"), CHARGERS("충전기")
+    HOME("홈"), HABITS("충전 습관"), CHARGERS("충전기"), SETTINGS("기록 관리")
 }
 
 /**
@@ -113,6 +114,7 @@ fun HomeScreen(state: ChargingState, screenOn: Boolean) {
                     Screen.HOME -> HomeContent(state, screenOn)
                     Screen.HABITS -> HabitsContent(state)
                     Screen.CHARGERS -> ChargersContent(state)
+                    Screen.SETTINGS -> SettingsContent()
                 }
                 Spacer(Modifier.height(24.dp))
             }
@@ -124,11 +126,17 @@ fun HomeScreen(state: ChargingState, screenOn: Boolean) {
 private fun HomeContent(state: ChargingState, screenOn: Boolean) {
     var mode by remember { mutableStateOf(GaugeMode.DROP) }
     val color = tierColor(state.tier)
-    val ceiling = maxOf(state.sessionPeakWatts * 1.25f, 30f)
     // 안드로이드는 "이 폰의 최대 충전 출력" 스펙을 알려주지 않는다. 대신 지금까지
     // 실측된 역대 최고 W(등록된 충전기들 + 이번 세션)를 기준선으로 쓴다.
-    val registryPeak = remember { ChargerRegistry.all().maxOfOrNull { it.bestPeakWatts } ?: 0f }
+    val chargerRev by ChargerRegistry.revision.collectAsState()
+    val registryPeak = remember(chargerRev) {
+        ChargerRegistry.all().maxOfOrNull { it.bestPeakWatts } ?: 0f
+    }
     val allTimePeakWatts = maxOf(registryPeak, state.sessionPeakWatts)
+    // 계기판 눈금 상한 = 실측 최고 + 5W 정도 여유, 5 단위로 올림.
+    // (25W 폰이면 30까지 그린다. 아직 실측이 없으면 30에서 시작한다.)
+    val ceiling = if (allTimePeakWatts < 1f) 30f
+    else (ceil((allTimePeakWatts + 5f) / 5f) * 5f).coerceAtLeast(10f)
     val calibrating = state.connected && !state.calibrated
     val wattsAbs = kotlin.math.abs(state.watts)
     val wattsText = if (calibrating) "측정 중" else String.format("%.1f", wattsAbs)
@@ -218,17 +226,8 @@ private fun HomeContent(state: ChargingState, screenOn: Boolean) {
 
     Spacer(Modifier.height(18.dp))
 
-    AnimatedVisibility(
-        visible = allTimePeakWatts >= 1f,
-        enter = fadeIn(tween(320, easing = EaseOutStrong)) +
-            slideInVertically(tween(320, easing = EaseOutStrong)) { it / 4 },
-        exit = fadeOut(tween(180))
-    ) {
-        Column {
-            PeakRatioBar(state.watts, allTimePeakWatts)
-            Spacer(Modifier.height(10.dp))
-        }
-    }
+    // "역대 최고 대비" 막대는 뺐다. 그 숫자 자체로는 할 수 있는 게 없고, 정작 알고 싶은
+    // "지금 이 충전기가 평소만큼 내주고 있나"는 충전기 카드가 문장으로 이미 알려준다.
 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Metric("완충까지",
@@ -264,12 +263,6 @@ private fun HabitsContent(state: ChargingState) {
         Spacer(Modifier.height(10.dp))
         ThrottleCard(state.throttles, state.sessionPeakWatts)
     }
-    Spacer(Modifier.height(10.dp))
-    ResetCard(
-        title = "충전 습관 기록 초기화",
-        body = "지금까지 쌓인 ${sessions.size}개 세션 기록을 지웁니다. 충전기 목록은 그대로 둡니다.",
-        onConfirm = { SessionStore.clear() }
-    )
 }
 
 @Composable
@@ -284,14 +277,39 @@ private fun ChargersContent(state: ChargingState) {
     } else {
         EmptyHint("충전기 순위", "충전기를 두 개 이상 써보면 출력을 비교해서 줄 세워 보여줍니다.")
     }
-    if (chargers.isNotEmpty()) {
-        Spacer(Modifier.height(10.dp))
-        ResetCard(
-            title = "충전기 목록 초기화",
-            body = "기억해 둔 충전기 ${chargers.size}개를 지웁니다. 다음 충전부터 다시 알아봅니다.",
-            onConfirm = { ChargerRegistry.clear() }
-        )
-    }
+}
+
+/**
+ * 기록을 지우는 곳. 되돌릴 수 없는 동작이라 평소 보는 화면에 두지 않고 별도 화면으로 뺐다 —
+ * 스크롤하다 실수로 누르는 일이 없어야 한다.
+ */
+@Composable
+private fun SettingsContent() {
+    val chargerRev by ChargerRegistry.revision.collectAsState()
+    val sessionRev by SessionStore.revision.collectAsState()
+    val chargers = remember(chargerRev) { ChargerRegistry.all() }
+    val sessions = remember(sessionRev) { SessionStore.recent(500) }
+
+    Text(
+        "지운 기록은 되돌릴 수 없습니다.",
+        color = TextMuted, fontSize = 12.sp,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+    )
+    ResetCard(
+        title = "충전 습관 기록 초기화",
+        body = if (sessions.isEmpty()) "아직 쌓인 세션 기록이 없습니다."
+        else "지금까지 쌓인 ${sessions.size}개 세션 기록을 지웁니다. 충전기 목록은 그대로 둡니다.",
+        enabled = sessions.isNotEmpty(),
+        onConfirm = { SessionStore.clear() }
+    )
+    Spacer(Modifier.height(10.dp))
+    ResetCard(
+        title = "충전기 목록 초기화",
+        body = if (chargers.isEmpty()) "아직 기억해 둔 충전기가 없습니다."
+        else "기억해 둔 충전기 ${chargers.size}개를 지웁니다. 다음 충전부터 다시 알아봅니다.",
+        enabled = chargers.isNotEmpty(),
+        onConfirm = { ChargerRegistry.clear() }
+    )
 }
 
 @Composable
@@ -305,12 +323,13 @@ private fun EmptyHint(title: String, body: String) {
 
 /** 되돌릴 수 없는 삭제라 한 번 더 확인을 받는다. */
 @Composable
-private fun ResetCard(title: String, body: String, onConfirm: () -> Unit) {
+private fun ResetCard(title: String, body: String, enabled: Boolean = true, onConfirm: () -> Unit) {
     var asking by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().glassPanel().padding(16.dp)) {
         Text(title, color = TextMuted, fontSize = 11.sp, letterSpacing = 1.sp)
         Spacer(Modifier.height(6.dp))
         Text(body, color = TextMuted, fontSize = 13.sp)
+        if (!enabled) return@Column
         Spacer(Modifier.height(12.dp))
         if (!asking) {
             Text(
@@ -399,30 +418,6 @@ private fun ClusterReadout(watts: String, socPercent: Int, tierLabel: String, mo
     }
 }
 
-/**
- * "이 폰이 받을 수 있는 최대 출력"을 안드로이드는 알려주지 않는다. 그래서 실측값을 쓴다 —
- * 지금까지 알아본 충전기들의 역대 최고 W. 새 값이 나올 때마다 자연히 갱신된다.
- */
-@Composable
-private fun PeakRatioBar(current: Float, peak: Float) {
-    val ratio = (current / peak).coerceIn(0f, 1f)
-    Column(Modifier.fillMaxWidth().glassPanel().padding(14.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically) {
-            Text("역대 최고 대비", color = TextMuted, fontSize = 11.sp, letterSpacing = 1.sp)
-            Text("${(ratio * 100).roundToInt()}%  ·  실측 최고 ${peak.roundToInt()}W",
-                color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-        }
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(50))
-            .background(Color(0xFF17281D))) {
-            Box(
-                Modifier.fillMaxWidth(ratio).fillMaxHeight()
-                    .clip(RoundedCornerShape(50)).background(greenForFraction(ratio))
-            )
-        }
-    }
-}
 
 @Composable
 private fun DischargeSummaryCard(d: DischargeSummary) {
