@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 필요한 권한이 이게 전부다. 네트워크도, 위치도, 저장소도 쓰지 않는다. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="Voltdrop"
+        android:icon="@android:drawable/ic_lock_idle_charging"
+        android:theme="@style/Theme.Material3.Dark.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.ChargingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="charging_telemetry" />
+        </service>
+
+        <!--
+            핵심: BATTERY_CHANGED 를 매니페스트에 등록하지 않는다.
+            (안드로이드 8 이후로 어차피 막혀 있고, 등록하면 초당 수십 번 프로세스가 깨어난다)
+            대신 꽂힘/뽑힘 두 이벤트만 받는다. 하루 몇 번뿐이라 비용이 0에 가깝다.
+        -->
+        <receiver
+            android:name=".service.PowerConnectionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#05070B">
+<title>Voltdrop — 충전 계측</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+:root{
+  --void:#05070B; --panel:#0E1521; --panel2:#131C2B; --line:#1F2B3C;
+  --text:#E9EEF6; --muted:#74839A; --dim:#4A5768;
+  --c-super:#3DDC97; --c-fast:#2FC7E8; --c-norm:#5B8DEF;
+  --c-trickle:#7A8699; --c-taper:#8B7BE8; --c-hot:#F5A524;
+  --accent:var(--c-fast);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{
+  background:var(--void); color:var(--text);
+  font-family:'Pretendard Variable',Pretendard,-apple-system,system-ui,sans-serif;
+  min-height:100dvh; padding:max(16px,env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom));
+  max-width:520px; margin:0 auto; overflow-x:hidden;
+}
+.num{font-family:'Chakra Petch',monospace;font-variant-numeric:tabular-nums}
+.eyebrow{
+  font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--muted); font-weight:600;
+}
+
+/* ── 상태 바 ── */
+.status{display:flex;justify-content:space-between;align-items:center;padding:4px 2px 14px}
+.live{display:flex;align-items:center;gap:9px;font-size:13px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 0 var(--accent);animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent)}
+  70%{box-shadow:0 0 0 9px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.plug{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:7px}
+.plug b{color:var(--text);font-weight:500}
+
+/* ── 게이지 ── */
+.stage{position:relative;height:296px;display:grid;place-items:center;margin-bottom:2px}
+.stage svg{position:absolute;inset:0;width:100%;height:100%;
+  transition:opacity .42s cubic-bezier(.4,0,.2,1),transform .42s cubic-bezier(.4,0,.2,1)}
+svg.off{opacity:0;pointer-events:none;transform:scale(.94)}
+.readout{position:relative;z-index:2;text-align:center;transition:transform .42s cubic-bezier(.4,0,.2,1)}
+.readout.dash{transform:translateY(42px)}
+.watts{font-size:62px;font-weight:600;line-height:.9;letter-spacing:-.02em;
+  color:var(--text);text-shadow:0 0 34px color-mix(in srgb,var(--accent) 30%,transparent)}
+.watts small{font-size:22px;font-weight:400;color:var(--muted);margin-left:3px}
+.sub{margin-top:9px;font-size:13.5px;color:var(--accent);font-weight:500;letter-spacing:.02em}
+.sub span{color:var(--dim);margin:0 7px}
+
+/* ── 토글 ── */
+.toggle{display:flex;gap:3px;background:var(--panel);padding:3px;border-radius:99px;
+  width:fit-content;margin:6px auto 20px;border:1px solid var(--line)}
+.toggle button{background:none;border:0;color:var(--muted);font:inherit;font-size:13px;
+  padding:8px 22px;border-radius:99px;cursor:pointer;transition:.22s;font-weight:500}
+.toggle button[aria-pressed="true"]{background:var(--panel2);color:var(--text)}
+
+/* ── 지표 3분할 ── */
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:9px}
+.metric{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px 12px}
+.metric .v{font-size:19px;font-weight:600;margin-top:7px;letter-spacing:-.01em}
+.metric .v i{font-style:normal;font-size:12px;color:var(--muted);font-weight:400;margin-left:1px}
+
+/* ── 카드 ── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:16px;margin-bottom:9px}
+.card h3{font-size:15.5px;font-weight:600;margin-top:8px;letter-spacing:-.01em}
+.card p{font-size:12.5px;color:var(--muted);margin-top:5px;line-height:1.55}
+
+/* ── 전력 곡선 ── */
+.curve{height:78px;width:100%;margin-top:12px;display:block}
+
+/* ── 스로틀 목록 ── */
+.evt{display:flex;justify-content:space-between;align-items:baseline;
+  padding:9px 0;border-top:1px solid var(--line);font-size:12.5px}
+.evt:first-of-type{border-top:0}
+.evt .when{color:var(--text);font-weight:500}
+.evt .why{font-size:12px;font-weight:500}
+.evt .why em{font-style:normal;color:var(--dim);font-weight:400;margin-left:6px}
+
+/* ── 습관 ── */
+.habit{display:flex;justify-content:space-between;align-items:center;padding:11px 0;
+  border-top:1px solid var(--line)}
+.habit:first-of-type{border-top:0}
+.habit .l{font-size:13px}
+.habit .l em{display:block;font-style:normal;font-size:11.5px;color:var(--muted);margin-top:3px}
+.habit .r{font-size:15px;font-weight:600;white-space:nowrap;margin-left:14px}
+.bar{height:3px;background:var(--panel2);border-radius:2px;margin-top:9px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;transition:width .6s ease}
+
+/* ── 시뮬 컨트롤 ── */
+.sim{margin-top:22px;padding-top:16px;border-top:1px dashed var(--line);
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sim button{flex:1;min-width:96px;background:var(--panel);border:1px solid var(--line);
+  color:var(--text);font:inherit;font-size:12.5px;padding:11px;border-radius:11px;cursor:pointer}
+.sim button:active{background:var(--panel2)}
+.note{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:12px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="status">
+  <div class="live"><span class="dot" id="dot"></span><span id="stateLabel">충전 중</span></div>
+  <div class="plug"><span id="plugIcon">⚡</span><b id="plugLabel">유선 어댑터</b></div>
+</div>
+
+<div class="stage">
+  <!-- 물방울 -->
+  <svg id="drop" viewBox="0 0 200 270" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <clipPath id="dropClip">
+        <path d="M100,12 C142,88 182,124 182,178 A82,82 0 1,1 18,178 C18,124 58,88 100,12 Z"/>
+      </clipPath>
+      <linearGradient id="fluid" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity=".92"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity=".42"/>
+      </linearGradient>
+    </defs>
+    <g clip-path="url(#dropClip)">
+      <rect width="200" height="270" fill="var(--accent)" opacity=".06"/>
+      <path id="waveBack" fill="var(--accent)" opacity=".26"/>
+      <path id="waveFront" fill="url(#fluid)"/>
+    </g>
+    <path d="M100,12 C142,88 182,124 182,178 A82,82 0 1,1 18,178 C18,124 58,88 100,12 Z"
+          fill="none" stroke="var(--accent)" stroke-opacity=".5" stroke-width="1.6"/>
+  </svg>
+
+  <!-- 계기판 -->
+  <svg id="dash" class="off" viewBox="0 0 260 200" preserveAspectRatio="xMidYMid meet">
+    <path id="arcBase" fill="none" stroke="#18222F" stroke-width="13" stroke-linecap="round"/>
+    <g id="ticks"></g>
+    <g id="marks"></g>
+    <path id="arcLive" fill="none" stroke="var(--accent)" stroke-width="13" stroke-linecap="round"/>
+    <circle id="peakPin" r="3.6" fill="#E9EEF6" opacity="0"/>
+    <g id="needle">
+      <path id="needlePath" fill="var(--accent)"/>
+      <circle cx="130" cy="140" r="9" fill="var(--void)" stroke="var(--accent)" stroke-width="2"/>
+    </g>
+  </svg>
+
+  <div class="readout" id="readout">
+    <div class="watts num"><span id="wattVal">0.0</span><small>W</small></div>
+    <div class="sub"><span id="socVal">0%</span><span>·</span><span id="tierVal">대기</span></div>
+  </div>
+</div>
+
+<div class="toggle">
+  <button id="btnDrop" aria-pressed="true">물방울</button>
+  <button id="btnDash" aria-pressed="false">계기판</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="eyebrow">완충까지</div><div class="v num" id="eta">—</div></div>
+  <div class="metric"><div class="eyebrow">배터리 온도</div><div class="v num" id="temp">—<i>°C</i></div></div>
+  <div class="metric"><div class="eyebrow">전류 · 전압</div><div class="v num" id="av">—</div></div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">전력 곡선 · 이번 세션</div>
+  <svg class="curve" id="curve" viewBox="0 0 320 78" preserveAspectRatio="none">
+    <path id="curveFill" fill="url(#curveGrad)" opacity=".18"/>
+    <path id="curveLine" fill="none" stroke="var(--accent)" stroke-width="1.8"
+          stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    <g id="curveMarks"></g>
+    <defs><linearGradient id="curveGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--accent)"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+    </linearGradient></defs>
+  </svg>
+</div>
+
+<div class="card">
+  <div class="eyebrow">이 충전기</div>
+  <h3 id="chgName">처음 보는 충전기입니다</h3>
+  <p id="chgDesc">전력 곡선을 몇 번 더 보면 이름을 붙여서 기억해 둡니다.</p>
+</div>
+
+<div class="card" id="throttleCard" style="display:none">
+  <div class="eyebrow">속도가 떨어진 지점</div>
+  <div id="evtList" style="margin-top:10px"></div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">최근 30회 충전 습관</div>
+  <div style="margin-top:12px">
+    <div class="habit">
+      <div class="l">100%에서 방치한 시간<em>완충 뒤에도 꽂아둔 시간의 하루 평균</em></div>
+      <div class="r num" style="color:var(--c-hot)">3시간 12분</div>
+    </div>
+    <div class="habit">
+      <div class="l">40°C 넘게 달군 시간<em>고온은 배터리 수명을 가장 빨리 깎는다</em></div>
+      <div class="r num" style="color:var(--c-hot)">47분</div>
+    </div>
+    <div class="habit">
+      <div class="l">밤샘 충전 비율<em>취침 중 4시간 이상 연결</em></div>
+      <div class="r num">18 / 30회</div>
+    </div>
+    <div class="habit">
+      <div class="l">실제 유입 효율<em>어댑터 출력 대비 셀에 들어간 양</em></div>
+      <div class="r num" style="color:var(--c-super)">88%</div>
+    </div>
+  </div>
+  <div class="bar"><i style="width:60%;background:var(--c-hot)"></i></div>
+  <p style="margin-top:10px">밤 충전을 80%에서 끊으면 완충 방치 시간이 하루 3시간 줄어듭니다.</p>
+</div>
+
+<div class="sim">
+  <button id="btnSpeed">속도 ×8</button>
+  <button id="btnRestart">처음부터 다시</button>
+</div>
+<p class="note">
+  시뮬레이션 프리뷰입니다. 22%에서 시작해 65W PD 어댑터로 충전하며,
+  발열 제한과 80% 이후 감속이 실제 리튬 배터리 곡선을 따라 재현됩니다.
+  계기판의 주황 눈금이 발열로 속도가 꺾인 지점, 흰 점이 이번 세션 최고 기록입니다.
+</p>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const TIERS = {
+  super:{n:'초고속',c:'--c-super'}, fast:{n:'고속',c:'--c-fast'},
+  norm:{n:'일반',c:'--c-norm'}, trickle:{n:'완속',c:'--c-trickle'},
+  taper:{n:'마무리',c:'--c-taper'}, hot:{n:'발열 제한',c:'--c-hot'}
+};
+const CAUSE = {heat:['발열','--c-hot'], taper:['잔량 구간','--c-taper'], src:['충전기 한계','--c-trickle']};
+
+// ── 상태 ──
+let soc=22, temp=27.4, watts=0, peak=0, t=0, speed=8, mode='drop';
+let hist=[], events=[], seenHot=false, seenTaper=false, chargerKnown=false;
+const CAP = 4500;              // mAh
+const MAXW = 42;               // 계기판 상한
+
+function step(){
+  t += 1;                       // 가상 초
+  // 램프업: 꽂고 6초 안에 최대 전력까지 올라간다
+  let target;
+  if (soc < 55) target = 33;
+  else if (soc < 80) target = 33 - (soc-55)*0.52;
+  else target = Math.max(2.4, 20 - (soc-80)*0.86);
+
+  // 발열: 전력이 높을수록 데워지고, 서서히 식는다
+  temp += (watts*0.0032) - (temp-26.5)*0.0042;
+
+  // 발열 제한: 39°C를 넘으면 강제로 눌린다
+  if (temp > 39.2) { target *= 0.52; if(!seenHot && soc<75){ mark('heat'); seenHot=true; } }
+  if (soc >= 80 && !seenTaper){ mark('taper'); seenTaper=true; }
+
+  const ramp = Math.min(1, t/6);
+  watts += (target*ramp - watts) * 0.18;
+  watts = Math.max(0, watts);
+  if (watts > peak) peak = watts;
+
+  // 충전량 반영
+  const volts = 3.72 + (soc/100)*0.62;
+  const amps = watts/volts;
+  soc += (amps*1000/3600)/CAP*100;
+  if (soc >= 100){ soc = 100; watts = Math.max(0, watts*0.86); }
+
+  hist.push(watts); if(hist.length>150) hist.shift();
+  render(volts, amps);
+}
+
+function mark(cause){
+  events.push({soc:Math.round(soc), temp:+temp.toFixed(1), cause,
+    before:+peak.toFixed(1), after:+watts.toFixed(1)});
+  if(events.length>4) events.shift();
+}
+
+function tierOf(){
+  if (temp > 39 && soc < 78) return 'hot';
+  if (soc >= 80) return 'taper';
+  if (watts >= 25) return 'super';
+  if (watts >= 12) return 'fast';
+  if (watts >= 5)  return 'norm';
+  return 'trickle';
+}
+
+function render(volts, amps){
+  const tier = tierOf();
+  document.documentElement.style.setProperty('--accent', `var(${TIERS[tier].c})`);
+
+  $('wattVal').textContent = watts.toFixed(1);
+  $('socVal').textContent = Math.floor(soc)+'%';
+  $('tierVal').textContent = TIERS[tier].n;
+  $('temp').innerHTML = temp.toFixed(1)+'<i>°C</i>';
+  $('av').innerHTML = amps.toFixed(2)+'<i>A</i> '+volts.toFixed(2)+'<i>V</i>';
+  $('stateLabel').textContent = soc>=100 ? '완충 · 대기 전류' : '충전 중';
+
+  // 완충 예상: 80% 전후를 다른 속도로 계산한다
+  if (watts>0.4 && soc<100){
+    const mpm = amps*1000/60;
+    const a = Math.max(0,(80-soc)/100*CAP)/mpm;
+    const b = (100-Math.max(soc,80))/100*CAP/(mpm*0.42);
+    const m = Math.round(a+b);
+    $('eta').textContent = m>=60 ? `${Math.floor(m/60)}<i>시간</i> ${m%60}<i>분</i>`.replace(/<i>/g,'<i>') : m+'분';
+    $('eta').innerHTML = m>=60 ? `${Math.floor(m/60)}<i>시간</i> ${m%60}<i>분</i>` : `${m}<i>분</i>`;
+  } else $('eta').textContent = soc>=100 ? '완료' : '—';
+
+  drawDrop(); drawDash(); drawCurve(); drawEvents(); drawCharger();
+}
+
+// ── 물방울 ──
+let phase = 0;
+function wavePath(top, amp, ph){
+  const len = 200/1.35; let d = `M0,${top}`;
+  for(let x=0;x<=200;x+=4){ d += ` L${x},${(top + amp*Math.sin(x/len*6.2832+ph)).toFixed(2)}`; }
+  return d + ` L200,270 L0,270 Z`;
+}
+function drawDrop(){
+  const top = 12 + (1 - soc/100) * 248;
+  const amp = 3.4 * Math.min(2, 0.7 + watts/34);
+  $('waveFront').setAttribute('d', wavePath(top, amp, phase));
+  $('waveBack').setAttribute('d', wavePath(top+1.5, amp*0.72, phase*0.65+1.1));
+}
+
+// ── 계기판 ──
+const CX=130, CY=140, R=92, A0=150, SW=240;
+const pt = (frac,r=R) => {
+  const a=(A0+SW*frac)*Math.PI/180;
+  return [CX+Math.cos(a)*r, CY+Math.sin(a)*r];
+};
+const arc = (frac,r=R) => {
+  const [x0,y0]=pt(0,r), [x1,y1]=pt(Math.max(frac,0.0001),r);
+  return `M${x0},${y0} A${r},${r} 0 ${SW*frac>180?1:0} 1 ${x1},${y1}`;
+};
+(function ticksOnce(){
+  let g='';
+  for(let i=0;i<=10;i++){
+    const maj=i%5===0, f=i/10;
+    const [xa,ya]=pt(f, R-(maj?22:16)), [xb,yb]=pt(f, R-8);
+    g+=`<line x1="${xa}" y1="${ya}" x2="${xb}" y2="${yb}" stroke="${maj?'#54637A':'#2C3949'}" stroke-width="${maj?2.4:1.4}"/>`;
+  }
+  $('ticks').innerHTML=g;
+  $('arcBase').setAttribute('d', arc(1));
+})();
+function drawDash(){
+  const f = Math.min(1, watts/MAXW);
+  $('arcLive').setAttribute('d', arc(f));
+  const [px,py] = pt(Math.min(1,peak/MAXW));
+  $('peakPin').setAttribute('cx',px); $('peakPin').setAttribute('cy',py);
+  $('peakPin').setAttribute('opacity', peak>0.5?'1':'0');
+
+  const ang = A0+SW*f;
+  $('needlePath').setAttribute('d',
+    `M${CX},${CY-3.8} L${CX+R-20},${CY-1.1} L${CX+R-20},${CY+1.1} L${CX},${CY+3.8} Z`);
+  $('needle').setAttribute('transform', `rotate(${ang} ${CX} ${CY})`);
+  $('needlePath').style.transition='none';
+
+  $('marks').innerHTML = events.map(e=>{
+    const f2=Math.min(1,e.after/MAXW);
+    const [x1,y1]=pt(f2,R-28), [x2,y2]=pt(f2,R+4);
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(${CAUSE[e.cause][1]})" stroke-width="2.8" stroke-linecap="round"/>`;
+  }).join('');
+}
+
+// ── 전력 곡선 ──
+function drawCurve(){
+  if(hist.length<2) return;
+  const W=320,H=78, max=Math.max(...hist,10);
+  const d = hist.map((v,i)=>`${i===0?'M':'L'}${(i/(hist.length-1)*W).toFixed(1)},${(H-4-(v/max)*(H-10)).toFixed(1)}`).join(' ');
+  $('curveLine').setAttribute('d', d);
+  $('curveFill').setAttribute('d', d+` L${W},${H} L0,${H} Z`);
+  $('curveMarks').innerHTML = events.map(e=>{
+    const idx = hist.findIndex(v=>Math.abs(v-e.after)<0.6);
+    const x = idx<0?W*0.7:(idx/(hist.length-1)*W);
+    return `<line x1="${x.toFixed(1)}" y1="0" x2="${x.toFixed(1)}" y2="${H}" stroke="var(${CAUSE[e.cause][1]})" stroke-width="1" stroke-dasharray="2 3" opacity=".75"/>`;
+  }).join('');
+}
+
+// ── 스로틀 목록 ──
+function drawEvents(){
+  $('throttleCard').style.display = events.length?'block':'none';
+  $('evtList').innerHTML = events.map(e=>`
+    <div class="evt">
+      <span class="when num">${e.soc}% · ${e.temp}°C</span>
+      <span class="why" style="color:var(${CAUSE[e.cause][1]})">${CAUSE[e.cause][0]}
+        <em class="num">${e.before}W → ${e.after}W</em></span>
+    </div>`).join('');
+}
+
+// ── 충전기 지문 ──
+function drawCharger(){
+  if(!chargerKnown && peak>18 && t>14){
+    chargerKnown = true;
+    $('chgName').textContent = '집 65W PD 어댑터';
+    $('chgDesc').textContent = '12번째 사용 · 역대 최고 34.6W · 지문이 일치합니다';
+  }
+  if(chargerKnown && peak>0 && peak < 34.6*0.82){
+    $('chgDesc').innerHTML = `<span style="color:var(--c-hot)">평소보다 ${Math.round((1-peak/34.6)*100)}% 낮게 들어옵니다. 케이블이나 포트를 확인해 보세요.</span>`;
+  }
+}
+
+// ── 루프 ──
+let acc=0, last=performance.now();
+function frame(now){
+  const dt = Math.min(100, now-last); last=now;
+  phase += dt*0.0022*(0.6+watts/26);
+  acc += dt*speed;
+  while(acc>1000){ acc-=1000; step(); }
+  drawDrop();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ── 조작 ──
+$('btnDrop').onclick = ()=>setMode('drop');
+$('btnDash').onclick = ()=>setMode('dash');
+function setMode(m){
+  mode=m;
+  $('drop').classList.toggle('off', m!=='drop');
+  $('dash').classList.toggle('off', m!=='dash');
+  $('readout').classList.toggle('dash', m==='dash');
+  $('btnDrop').setAttribute('aria-pressed', m==='drop');
+  $('btnDash').setAttribute('aria-pressed', m==='dash');
+}
+const SPEEDS=[1,4,8,20];
+$('btnSpeed').onclick = e=>{
+  speed = SPEEDS[(SPEEDS.indexOf(speed)+1)%SPEEDS.length];
+  e.target.textContent = `속도 ×${speed}`;
+};
+$('btnRestart').onclick = ()=>{
+  soc=22; temp=27.4; watts=0; peak=0; t=0;
+  hist=[]; events=[]; seenHot=false; seenTaper=false; chargerKnown=false;
+  $('chgName').textContent='처음 보는 충전기입니다';
+  $('chgDesc').textContent='전력 곡선을 몇 번 더 보면 이름을 붙여서 기억해 둡니다.';
+};
+step();
+})();
+</script>
+</body>
+</html>
