@@ -147,6 +147,7 @@ fun WaterDropGauge(
     val wavePath = remember { Path() }
     val circlePath = remember { Path() }
     val streamPath = remember { Path() }
+    val coreLightPath = remember { Path() }
     // 소수 그대로 들고 간다 — 정수로 자르면 개수가 바뀌는 순간 기포가 툭 나타난다.
     val bubbleCountF = (6f + smoothWatts / 2.2f).coerceIn(6f, 34f)
     // 모드가 바뀔 때 테두리 두께가 툭 끊기지 않고 스르륵 따라오게 한다.
@@ -309,7 +310,7 @@ fun WaterDropGauge(
                     val gravity = r * (0.34f + intensity * 0.14f) * (0.9f + hIdx * 0.13f)
                     // 출렁임에 맞춰 굵기도 살짝 맥동한다 — 수도꼭지처럼 일정하지 않게.
                     val pulse = 1f + sin(livePhase * (1.6f + hIdx * 0.4f) + seed) * 0.14f
-                    val headW = r * (0.058f + intensity * 0.062f) * share * pulse * open * widthMul
+                    val headW = r * (0.080f + intensity * 0.085f) * share * pulse * open * widthMul
 
                     // 링에서 비울 반각 = 줄기 반폭이 원주에서 차지하는 각 (+ 아주 약간의 여유)
                     val halfGapDeg = Math.toDegrees(atan((headW * 1.15f) / r).toDouble()).toFloat()
@@ -337,8 +338,10 @@ fun WaterDropGauge(
                         // 유량보존 그대로 쓰면(속도에 반비례) 순식간에 실오라기처럼 가늘어진다.
                         // 제곱근을 씌워 완만하게 좁히고, 최소 굵기도 넉넉히 잡는다.
                         val base = headW * sqrt(speed0 / speedAt(t)).coerceIn(0.62f, 1f)
-                        // 좌우 가장자리를 살짝 다른 위상으로 흔든다 (완전 대칭이면 고무호스처럼 보인다)
-                        val wob = sin(t * 5.5f - flowPhase + seed + side * 1.9f) * base * 0.16f
+                        // 좌우 가장자리를 다른 위상으로 흔든다 (완전 대칭이면 고무호스처럼 보인다).
+                        // 파장이 다른 두 파를 겹쳐 표면이 규칙적인 물결로 안 보이게 한다.
+                        val wob = (sin(t * 5.5f - flowPhase + seed + side * 1.9f) * 0.16f +
+                            sin(t * 11.3f - flowPhase * 1.7f + seed * 2.1f) * 0.07f) * base
                         // 끊어지는 지점 부근에서만 잘록해진다
                         val neck = 1f - 0.35f * (t / breakT).coerceIn(0f, 1f).pow(3f)
                         return base * neck + wob
@@ -382,6 +385,33 @@ fun WaterDropGauge(
                         )
                     )
 
+                    // 안쪽에 비치는 밝은 심. 실제 물줄기는 속이 비쳐서 가운데가 하얗게 도드라진다 —
+                    // 이게 없으면 그냥 칠해진 띠로 보인다. 가운데보다 약간 한쪽으로 치우쳐 그린다.
+                    coreLightPath.reset()
+                    for (i in 0..ribSteps) {
+                        val t = breakT * i / ribSteps
+                        val p = pointAt(t)
+                        val sp = speedAt(t)
+                        val nx = -(dirY * v0 + 2f * gravity * t) / sp
+                        val ny = (dirX * v0) / sp
+                        val off = halfAt(t, 0f) * 0.18f      // 심의 중심선을 살짝 치우친다
+                        val core = halfAt(t, 0f) * 0.30f
+                        if (i == 0) coreLightPath.moveTo(p.x + nx * (off + core), p.y + ny * (off + core))
+                        else coreLightPath.lineTo(p.x + nx * (off + core), p.y + ny * (off + core))
+                    }
+                    for (i in ribSteps downTo 0) {
+                        val t = breakT * i / ribSteps
+                        val p = pointAt(t)
+                        val sp = speedAt(t)
+                        val nx = -(dirY * v0 + 2f * gravity * t) / sp
+                        val ny = (dirX * v0) / sp
+                        val off = halfAt(t, 0f) * 0.18f
+                        val core = halfAt(t, 0f) * 0.30f
+                        coreLightPath.lineTo(p.x + nx * (off - core), p.y + ny * (off - core))
+                    }
+                    coreLightPath.close()
+                    drawPath(coreLightPath, Color.White.copy(alpha = 0.30f * open))
+
                     // 끊어진 지점부터는 방울이 같은 궤적을 그대로 이어 떨어진다.
                     // 줄기와 같은 pointAt 을 쓰므로 방울이 궤도에서 벗어나 보이지 않는다.
                     // 위상은 누적값(leakAcc)에서 가져온다 — 절대 시각 % 주기로 구하면 세기가
@@ -389,7 +419,10 @@ fun WaterDropGauge(
                     // 실제 물줄기는 끊어진 뒤 한 줄로 떨어지지 않고 크고 작은 방울로 흩뿌려진다.
                     // 방울마다 크기·옆으로 벌어지는 정도·낙하 위상을 달리해 물보라처럼 보이게 한다.
                     val dropHalf = halfAt(breakT, 0f)
-                    val dropCount = 6
+                    // 방울은 줄기보다 밝게 — 어두운 배경 위에서 흩날리는 물은 빛을 받아 도드라진다.
+                    // 줄기와 같은 색에 알파만 낮추면 배경에 섞여 탁한 점처럼 보인다.
+                    val dropColor = lerp(fillColor, Color.White, 0.62f)
+                    val dropCount = 9
                     for (i in 0 until dropCount) {
                         // 황금비 간격으로 흩어 위상이 규칙적으로 뭉치지 않게
                         val phase = (leakAcc + i * 0.6180339f + hIdx * 0.27f) % 1f
@@ -398,17 +431,19 @@ fun WaterDropGauge(
                         val sp = speedAt(t)
                         val nx = -(dirY * v0 + 2f * gravity * t) / sp
                         val ny = (dirX * v0) / sp
-                        // 좌우로 번갈아, 아래로 갈수록 더 벌어진다
-                        val lateral = ((i % 3) - 1) * (0.6f + (i % 2) * 0.7f)
-                        val spread = lateral * dropHalf * 1.3f * phase
-                        val a = (1f - phase * phase) * 0.9f * open   // 끝에서 부드럽게 사라진다
-                        val sizeVar = when (i % 3) {                 // 큰 방울 사이에 잔방울
-                            0 -> 1.15f
-                            1 -> 0.62f
-                            else -> 0.88f
+                        // 좌우로 넓게 튄다. 방울마다 벌어지는 정도를 크게 달리해 부채꼴로 퍼지게.
+                        val lateral = ((i % 5) - 2) * (0.5f + (i % 3) * 0.55f)
+                        val spread = lateral * dropHalf * 1.5f * phase
+                        // 거의 끝까지 밝게 유지하다 마지막에만 사라진다 (제곱으로 죽이면 금방 탁해진다)
+                        val a = (1f - phase * 0.75f).coerceIn(0f, 1f) * 0.95f * open
+                        val sizeVar = when (i % 4) {                 // 큰 방울 사이에 잔방울
+                            0 -> 1.2f
+                            1 -> 0.45f
+                            2 -> 0.85f
+                            else -> 0.62f
                         }
                         drawCircle(
-                            streamColor.copy(alpha = a),
+                            dropColor.copy(alpha = a),
                             radius = dropHalf * sizeVar,
                             center = Offset(p.x + nx * spread, p.y + ny * spread)
                         )
