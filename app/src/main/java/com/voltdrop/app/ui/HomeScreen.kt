@@ -2,6 +2,7 @@ package com.voltdrop.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -375,13 +377,25 @@ private fun ModeToggle(mode: GaugeMode, onChange: (GaugeMode) -> Unit) {
     ) {
         listOf(GaugeMode.DROP to "물방울", GaugeMode.DASH to "계기판").forEach { (m, label) ->
             val active = m == mode
+            // 선택 표시가 툭 바뀌지 않게 색을 애니메이션한다. 애니메이션되는 색은
+            // background() 대신 drawBehind 로 칠해서 그리기 단계에서만 갱신되게 한다.
+            val pill by animateColorAsState(
+                targetValue = if (active) Color(0xFF1E3A2A) else Color.Transparent,
+                animationSpec = tween(220, easing = EaseOutStrong),
+                label = "togglePill"
+            )
+            val labelColor by animateColorAsState(
+                targetValue = if (active) TextMain else TextMuted,
+                animationSpec = tween(220, easing = EaseOutStrong),
+                label = "toggleLabel"
+            )
             Text(
                 label,
-                color = if (active) TextMain else TextMuted,
+                color = labelColor,
                 fontSize = 13.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
-                    .background(if (active) Color(0xFF1E2A3D) else Color.Transparent)
+                    .drawBehind { drawRect(pill) }
                     .clickable { onChange(m) }
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             )

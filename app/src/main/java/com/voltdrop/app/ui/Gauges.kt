@@ -344,13 +344,27 @@ fun DashboardGauge(
     }
     val mode = driveModeFor(watts)
     val density = LocalDensity.current
-    // 모드가 바뀔 때 두께·강조 밴드가 툭 끊기지 않고 부드럽게 넘어가게 한다.
-    val targetArcWidth = when (mode) {
-        DriveMode.ECO -> 10f
-        DriveMode.NORMAL -> 14f
-        DriveMode.SPORT -> 19f
+
+    // 주행 모드 하나가 아크 두께와 파워밴드 강조를 함께 움직인다. 값마다 animateFloatAsState 를
+    // 따로 두면 스펙이 어긋나 서로 다른 시점에 도착하면서 전환이 어긋나 보인다 —
+    // 하나의 Transition 에 자식 애니메이션으로 묶어 항상 같이 도착하게 한다.
+    val modeTransition = rememberTransition(
+        transitionState = remember { MutableTransitionState(mode) }.apply { targetState = mode },
+        label = "driveMode"
+    )
+    val arcWidth by modeTransition.animateFloat(
+        transitionSpec = { tween(500) }, label = "arcWidth"
+    ) { m ->
+        when (m) {
+            DriveMode.ECO -> 10f
+            DriveMode.NORMAL -> 14f
+            DriveMode.SPORT -> 19f
+        }
     }
-    val arcWidth by animateFloatAsState(targetArcWidth, label = "arcWidth")
+    val sportAmount by modeTransition.animateFloat(
+        transitionSpec = { tween(500) }, label = "sportAmount"
+    ) { m -> if (m == DriveMode.SPORT) 1f else 0f }
+
     val tickLabelPaint = remember {
         android.graphics.Paint().apply {
             isAntiAlias = true
@@ -358,10 +372,6 @@ fun DashboardGauge(
             setColor(android.graphics.Color.argb(220, 126, 150, 136))
         }
     }
-    val sportAmount by animateFloatAsState(
-        if (mode == DriveMode.SPORT) 1f else 0f,
-        animationSpec = tween(500), label = "sportAmount"
-    )
 
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
