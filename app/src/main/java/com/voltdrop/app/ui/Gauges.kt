@@ -301,11 +301,15 @@ fun WaterDropGauge(
 
                     // 구멍이 여러 개면 하나당 나오는 양이 줄어든다 — 총량은 세기가 정한다.
                     val share = (0.62f + intensity * 0.38f) / (1f + (holeCountF - 1f) * 0.35f)
-                    val v0 = r * (0.10f + intensity * 0.10f) * (0.75f + share * 0.5f) * speedMul
-                    val gravity = r * (0.13f + intensity * 0.07f) * (0.9f + hIdx * 0.13f)
+
+                    // 실제로 통에 난 구멍에서 새는 물은 옆으로 멀리 뻗지 않는다. 수압으로 살짝
+                    // 밀려 나오자마자 중력이 이겨서 거의 곧장 떨어진다. 예전에는 초기 속도가
+                    // 커서 옆으로 크게 휘는 뿔처럼 보였다 — 가로 속도를 줄이고 중력을 키운다.
+                    val v0 = r * (0.035f + intensity * 0.035f) * (0.75f + share * 0.5f) * speedMul
+                    val gravity = r * (0.34f + intensity * 0.14f) * (0.9f + hIdx * 0.13f)
                     // 출렁임에 맞춰 굵기도 살짝 맥동한다 — 수도꼭지처럼 일정하지 않게.
                     val pulse = 1f + sin(livePhase * (1.6f + hIdx * 0.4f) + seed) * 0.14f
-                    val headW = r * (0.045f + intensity * 0.055f) * share * pulse * open * widthMul
+                    val headW = r * (0.058f + intensity * 0.062f) * share * pulse * open * widthMul
 
                     // 링에서 비울 반각 = 줄기 반폭이 원주에서 차지하는 각 (+ 아주 약간의 여유)
                     val halfGapDeg = Math.toDegrees(atan((headW * 1.15f) / r).toDouble()).toFloat()
@@ -316,79 +320,97 @@ fun WaterDropGauge(
                         val y = holeY + dirY * v0 * t + gravity * t * t
                         return Offset(x, y)
                     }
+                    // t 지점의 속력. 낙하하며 빨라진다.
+                    fun speedAt(t: Float): Float {
+                        val vy = dirY * v0 + 2f * gravity * t
+                        return hypot(dirX * v0, vy).coerceAtLeast(1f)
+                    }
 
-                    // 줄기 실루엣.
-                    //
-                    // 예쁘게 보이려면 세 가지가 필요하다:
-                    //  - 끝이 뭉툭하게 잘리지 않고 한 점으로 모여야 한다 (물은 가늘어지다 끊긴다)
-                    //  - 굵기가 선형이 아니라 처음엔 천천히, 끝에서 급히 줄어야 한다 (표면장력)
-                    //  - 좌우 가장자리가 살짝 다르게 흔들려야 한다 (완전 대칭이면 고무호스처럼 보인다)
+                    // 줄기 굵기는 유량 보존을 따른다: 단면적 × 속력 = 일정.
+                    // 즉 떨어지며 빨라질수록 가늘어진다. 예전처럼 (1-t)^1.6 으로 0 까지 좁히면
+                    // 칼끝처럼 뾰족해져 물이 아니라 뿔처럼 보인다 — 실제 물줄기는 끝까지
+                    // 두께를 가지다가 방울로 끊어진다.
+                    val speed0 = speedAt(0f)
+                    // 줄기는 도중에 끊어지고(표면장력) 그 아래는 방울이 이어받는다.
+                    val breakT = 0.62f
                     fun halfAt(t: Float, side: Float): Float {
-                        // (1-t)^1.6 → 초반은 통통하고 끝으로 갈수록 빠르게 가늘어진다
-                        val taper = (1f - t).pow(1.6f)
-                        val wob = sin(t * 6.5f - flowPhase + seed + side * 1.9f) *
-                            (1f - t) * headW * 0.22f
-                        return headW * taper + wob
+                        // 유량보존 그대로 쓰면(속도에 반비례) 순식간에 실오라기처럼 가늘어진다.
+                        // 제곱근을 씌워 완만하게 좁히고, 최소 굵기도 넉넉히 잡는다.
+                        val base = headW * sqrt(speed0 / speedAt(t)).coerceIn(0.62f, 1f)
+                        // 좌우 가장자리를 살짝 다른 위상으로 흔든다 (완전 대칭이면 고무호스처럼 보인다)
+                        val wob = sin(t * 5.5f - flowPhase + seed + side * 1.9f) * base * 0.16f
+                        // 끊어지는 지점 부근에서만 잘록해진다
+                        val neck = 1f - 0.35f * (t / breakT).coerceIn(0f, 1f).pow(3f)
+                        return base * neck + wob
                     }
 
                     streamPath.reset()
                     // 한쪽 가장자리를 따라 내려갔다가 반대쪽 가장자리를 따라 올라와서 닫는다.
-                    for (i in 0..steps) {
-                        val t = i / steps.toFloat()
+                    val ribSteps = (steps * breakT).toInt().coerceAtLeast(6)
+                    for (i in 0..ribSteps) {
+                        val t = breakT * i / ribSteps
                         val p = pointAt(t)
-                        val tangentY = dirY * v0 + 2f * gravity * t
-                        val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
-                        val nx = -tangentY / len
-                        val ny = (dirX * v0) / len
+                        val sp = speedAt(t)
+                        val nx = -(dirY * v0 + 2f * gravity * t) / sp
+                        val ny = (dirX * v0) / sp
                         val half = halfAt(t, 1f)
                         if (i == 0) streamPath.moveTo(p.x + nx * half, p.y + ny * half)
                         else streamPath.lineTo(p.x + nx * half, p.y + ny * half)
                     }
-                    for (i in steps downTo 0) {
-                        val t = i / steps.toFloat()
+                    for (i in ribSteps downTo 0) {
+                        val t = breakT * i / ribSteps
                         val p = pointAt(t)
-                        val tangentY = dirY * v0 + 2f * gravity * t
-                        val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
-                        val nx = -tangentY / len
-                        val ny = (dirX * v0) / len
+                        val sp = speedAt(t)
+                        val nx = -(dirY * v0 + 2f * gravity * t) / sp
+                        val ny = (dirX * v0) / sp
                         val half = halfAt(t, -1f)
                         streamPath.lineTo(p.x - nx * half, p.y - ny * half)
                     }
                     streamPath.close()
 
-                    // 물기둥은 가장자리가 밝고 안쪽이 조금 더 짙다 — 유리관 같은 입체감.
+                    // 물기둥은 위가 밝고 아래로 갈수록 살짝 옅다 — 유리관 같은 입체감.
                     val head = pointAt(0f)
-                    val tail = pointAt(1f)
+                    val breakPoint = pointAt(breakT)
                     drawPath(
                         streamPath,
                         brush = Brush.linearGradient(
                             colors = listOf(
                                 streamColor.copy(alpha = 0.95f * open),
-                                streamColor.copy(alpha = 0.72f * open)
+                                streamColor.copy(alpha = 0.78f * open)
                             ),
-                            start = head, end = tail
+                            start = head, end = breakPoint
                         )
                     )
 
-                    // 줄기 끝에서 부서져 떨어지는 방울들. 위상은 누적값(leakAcc)에서 가져온다 —
-                    // 예전처럼 "절대 시각 % 주기"로 구하면 세기가 바뀌는 순간 위치가 점프했다.
-                    // 크기와 옆으로 흩어지는 정도를 방울마다 달리 줘서 흩뿌려지는 느낌을 낸다.
-                    for (i in 0 until 3) {
-                        val dt = (leakAcc + i * 0.333f + hIdx * 0.27f) % 1f
-                        val spread = (i - 1) * headW * 0.55f * dt      // 아래로 갈수록 옆으로 벌어진다
-                        val tangentY = dirY * v0 + 2f * gravity
-                        val len = hypot(dirX * v0, tangentY).coerceAtLeast(1f)
-                        val nx = -tangentY / len
-                        val ny = (dirX * v0) / len
-                        val dx = tail.x + dirX * v0 * dt * 0.3f + nx * spread
-                        val dy = tail.y + (dirY * v0 * 0.3f + gravity * 0.55f * (1f + dt)) * dt +
-                            ny * spread
-                        val a = (1f - dt * dt) * 0.85f * open          // 끝에서 부드럽게 사라진다
-                        val sizeVar = 0.72f - i * 0.12f
+                    // 끊어진 지점부터는 방울이 같은 궤적을 그대로 이어 떨어진다.
+                    // 줄기와 같은 pointAt 을 쓰므로 방울이 궤도에서 벗어나 보이지 않는다.
+                    // 위상은 누적값(leakAcc)에서 가져온다 — 절대 시각 % 주기로 구하면 세기가
+                    // 바뀌는 순간 위치가 점프한다.
+                    // 실제 물줄기는 끊어진 뒤 한 줄로 떨어지지 않고 크고 작은 방울로 흩뿌려진다.
+                    // 방울마다 크기·옆으로 벌어지는 정도·낙하 위상을 달리해 물보라처럼 보이게 한다.
+                    val dropHalf = halfAt(breakT, 0f)
+                    val dropCount = 6
+                    for (i in 0 until dropCount) {
+                        // 황금비 간격으로 흩어 위상이 규칙적으로 뭉치지 않게
+                        val phase = (leakAcc + i * 0.6180339f + hIdx * 0.27f) % 1f
+                        val t = breakT + (1f - breakT) * phase
+                        val p = pointAt(t)
+                        val sp = speedAt(t)
+                        val nx = -(dirY * v0 + 2f * gravity * t) / sp
+                        val ny = (dirX * v0) / sp
+                        // 좌우로 번갈아, 아래로 갈수록 더 벌어진다
+                        val lateral = ((i % 3) - 1) * (0.6f + (i % 2) * 0.7f)
+                        val spread = lateral * dropHalf * 1.3f * phase
+                        val a = (1f - phase * phase) * 0.9f * open   // 끝에서 부드럽게 사라진다
+                        val sizeVar = when (i % 3) {                 // 큰 방울 사이에 잔방울
+                            0 -> 1.15f
+                            1 -> 0.62f
+                            else -> 0.88f
+                        }
                         drawCircle(
                             streamColor.copy(alpha = a),
-                            radius = headW * sizeVar * (1f - dt * 0.35f),
-                            center = Offset(dx, dy)
+                            radius = dropHalf * sizeVar,
+                            center = Offset(p.x + nx * spread, p.y + ny * spread)
                         )
                     }
                 }
